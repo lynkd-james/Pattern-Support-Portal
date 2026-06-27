@@ -1,0 +1,16 @@
+# Secrets — never commit
+vercel-recovery-codes.txt
+*.env
+.env
+.env*.local
+
+# Node / Next build artifacts (app lives in web/)
+web/node_modules/
+web/.next/
+web/out/
+web/next-env.d.ts
+web/*.tsbuildinfo
+
+# OS
+.DS_Store
+Thumbs.db

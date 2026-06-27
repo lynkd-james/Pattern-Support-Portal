@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Page chrome behind the app — warm near-black base, dark form controls,
+   and the Pattern brand font stack applied app-wide. */
+html,
+body {
+  background-color: #0a0706;
+  color-scheme: dark;
+}
+
+body {
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
