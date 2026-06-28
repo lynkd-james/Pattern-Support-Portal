@@ -98,11 +98,18 @@ export default function DashboardPage() {
     >
       <div className="mx-auto max-w-7xl px-6 py-10">
         <header className="mb-8 flex items-end justify-between">
-          <div>
-            <h1 className="text-2xl font-medium tracking-tight text-[#F7F2E8]">Support Tickets</h1>
-            <p className="mt-1.5 text-sm text-[#9C8E78]">
-              {session ? `${session.account.name} · ${session.user.displayName ?? session.user.email}` : " "}
-            </p>
+          <div className="flex items-center gap-3">
+            <img
+              src="/pattern-logo.svg"
+              alt="Pattern"
+              className="h-7 w-auto shrink-0"
+            />
+            <div>
+              <h1 className="text-2xl font-medium tracking-tight text-[#F7F2E8]">Support Portal</h1>
+              <p className="mt-1.5 text-sm text-[#9C8E78]">
+                {session ? `${session.account.name} · ${session.user.displayName ?? session.user.email}` : " "}
+              </p>
+            </div>
           </div>
         </header>
 
