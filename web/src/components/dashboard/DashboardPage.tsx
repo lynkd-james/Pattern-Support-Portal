@@ -102,7 +102,7 @@ export default function DashboardPage() {
             <img
               src="/pattern-logo.svg"
               alt="Pattern"
-              className="h-7 w-auto shrink-0"
+              className="h-10 w-auto shrink-0"
             />
             <div>
               <h1 className="text-2xl font-medium tracking-tight text-[#F7F2E8]">Support Portal</h1>
