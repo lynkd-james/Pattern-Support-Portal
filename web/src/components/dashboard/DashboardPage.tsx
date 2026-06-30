@@ -97,20 +97,16 @@ export default function DashboardPage() {
       style={{ fontFamily: FONT_STACK }}
     >
       <div className="mx-auto max-w-7xl px-6 py-10">
-        <header className="mb-8 flex items-end justify-between">
-          <div className="flex items-center gap-3">
-            <img
-              src="/pattern-logo.svg"
-              alt="Pattern"
-              className="h-10 w-auto shrink-0"
-            />
-            <div>
-              <h1 className="text-2xl font-medium tracking-tight text-[#F7F2E8]">Support Portal</h1>
-              <p className="mt-1.5 text-sm text-[#9C8E78]">
-                {session ? `${session.account.name} · ${session.user.displayName ?? session.user.email}` : " "}
-              </p>
-            </div>
-          </div>
+        <header className="mb-8">
+          <img
+            src="/pattern-logo.svg"
+            alt="Pattern"
+            className="mb-4 h-10 w-auto"
+          />
+          <h1 className="text-2xl font-medium tracking-tight text-[#F7F2E8]">Support Portal</h1>
+          <p className="mt-1.5 text-sm text-[#9C8E78]">
+            {session ? `${session.account.name} · ${session.user.displayName ?? session.user.email}` : " "}
+          </p>
         </header>
 
         <section className="mb-8">
