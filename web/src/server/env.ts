@@ -84,10 +84,14 @@ export const env = {
   // Archived backfill safeguard (default ON). Set false to retrieve active only.
   clickupIncludeArchived: readBool("CLICKUP_INCLUDE_ARCHIVED", true),
 
-  // Microsoft Graph app-only (Stage 3+)
+  // Microsoft Graph app-only (Stage 6: Outlook acknowledgement ingestion)
   graphTenantId: readString("GRAPH_TENANT_ID"),
   graphClientId: readString("GRAPH_CLIENT_ID"),
   graphClientSecret: readString("GRAPH_CLIENT_SECRET"),
+  // Shared mailbox scanned for the "ticket has been logged" acknowledgement email.
+  graphSupportMailbox:
+    readString("GRAPH_SUPPORT_MAILBOX") ?? "supportdesk@lynkd.co.za",
+  graphSyncOverlapMs: readInt("GRAPH_SYNC_OVERLAP_MS", 60_000),
 
   // Publishing (Stage 5+) — safe default
   autoPublishEnabled: readBool("AUTO_PUBLISH_ENABLED", false),
@@ -162,11 +166,4 @@ export function describeConfig(): Record<string, string> {
     nodeEnv: env.nodeEnv,
     DATABASE_URL: mask(env.databaseUrl),
     CLICKUP_API_TOKEN: mask(env.clickupApiToken),
-    GRAPH_TENANT_ID: mask(env.graphTenantId),
-    GRAPH_CLIENT_ID: mask(env.graphClientId),
-    GRAPH_CLIENT_SECRET: mask(env.graphClientSecret),
-    AUTO_PUBLISH_ENABLED: String(env.autoPublishEnabled),
-    PGPOOL_MAX: String(env.pgPoolMax),
-    PG_DISABLE_SSL: String(env.pgDisableSsl),
-  };
-}
+    GRAPH_TENANT_ID: 
