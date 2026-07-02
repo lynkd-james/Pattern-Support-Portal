@@ -17,7 +17,7 @@ const CARDS: CardDef[] = [
   { key: "totalOpen", label: "Total Open Tickets", accent: "text-[#F7F2E8]", ring: "border-l-[#E8923E]" },
   { key: "atRiskSla", label: "At Risk SLA", accent: "text-[#F0B854]", ring: "border-l-[#F0B854]" },
   { key: "breachedSla", label: "Breached SLA", accent: "text-[#E26A60]", ring: "border-l-[#E26A60]" },
-  { key: "resolved", label: "Resolved", accent: "text-[#6CC08A]", ring: "border-l-[#6CC08A]" },
+  { key: "closed", label: "Closed Tickets", accent: "text-[#6CC08A]", ring: "border-l-[#6CC08A]" },
 ];
 
 interface Props {

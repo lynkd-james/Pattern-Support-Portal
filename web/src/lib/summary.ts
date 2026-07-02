@@ -18,27 +18,25 @@
 import type { TicketListItem } from "./types";
 
 export interface DashboardSummary {
-  totalOpen: number;   // stage NOT IN (RESOLVED, CLOSED)
+  totalOpen: number;   // stage !== CLOSED (business definition of "open")
   atRiskSla: number;   // resolutionSlaState === AT_RISK
   breachedSla: number; // resolutionSlaState === BREACHED
-  resolved: number;    // stage === RESOLVED
+  closed: number;      // stage === CLOSED (Done or Cancelled both close a ticket)
 }
-
-const CLOSED_STAGES = new Set(["RESOLVED", "CLOSED"]);
 
 export function computeSummary(tickets: TicketListItem[]): DashboardSummary {
   const summary: DashboardSummary = {
     totalOpen: 0,
     atRiskSla: 0,
     breachedSla: 0,
-    resolved: 0,
+    closed: 0,
   };
 
   for (const t of tickets) {
-    if (!CLOSED_STAGES.has(t.stage)) summary.totalOpen += 1;
+    if (t.stage !== "CLOSED") summary.totalOpen += 1;
     if (t.resolutionSlaState === "AT_RISK") summary.atRiskSla += 1;
     if (t.resolutionSlaState === "BREACHED") summary.breachedSla += 1;
-    if (t.stage === "RESOLVED") summary.resolved += 1;
+    if (t.stage === "CLOSED") summary.closed += 1;
   }
 
   return summary;
