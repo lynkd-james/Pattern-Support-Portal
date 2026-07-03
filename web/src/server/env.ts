@@ -166,4 +166,11 @@ export function describeConfig(): Record<string, string> {
     nodeEnv: env.nodeEnv,
     DATABASE_URL: mask(env.databaseUrl),
     CLICKUP_API_TOKEN: mask(env.clickupApiToken),
-    GRAPH_TENANT_ID: 
+    GRAPH_TENANT_ID: mask(env.graphTenantId),
+    GRAPH_CLIENT_ID: mask(env.graphClientId),
+    GRAPH_CLIENT_SECRET: mask(env.graphClientSecret),
+    AUTO_PUBLISH_ENABLED: String(env.autoPublishEnabled),
+    PGPOOL_MAX: String(env.pgPoolMax),
+    PG_DISABLE_SSL: String(env.pgDisableSsl),
+  };
+}

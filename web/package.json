@@ -12,6 +12,7 @@
     "db:verify": "tsx scripts/db/verify.ts",
     "sync:clickup": "tsx scripts/sync/clickup.ts",
     "sync:outlook": "tsx scripts/sync/outlook.ts",
+    "sla": "tsx scripts/sla/run.ts",
     "project": "tsx scripts/projection/run.ts",
     "project:rebuild": "tsx scripts/projection/run.ts --rebuild"
   },
@@ -30,4 +31,7 @@
     "dotenv": "16.4.5",
     "postcss": "8.4.39",
     "tailwindcss": "3.4.6",
-  
+    "tsx": "4.16.2",
+    "typescript": "5.4.5"
+  }
+}

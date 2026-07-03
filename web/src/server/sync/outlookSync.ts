@@ -260,4 +260,7 @@ export async function runOutlookSync(
     anomalies,
     unmatchedRefs,
     errors,
-  }
+  });
+  log.info("outlook_sync_finished", { ...summary });
+  return summary;
+}

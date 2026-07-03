@@ -10,8 +10,8 @@
 //   * accounts        — one per client (18)
 //   * business_units  — one per client; slug = ClickUp customer code
 //   * status_mappings — global (account_id = NULL); replaces any prior rows
-//   * sla_calendars   — one Africa/Johannesburg scaffold
-//   * sla_policies    — DELIBERATELY NONE (await real targets)
+//   * sla_calendars   — one Africa/Johannesburg business-hours calendar
+//   * sla_policies    — one GLOBAL set (P1–P3), business-hours targets, data-driven
 //
 // Migration: the legacy single "pepkor" account + its brand BUs are RETIRED by
 // setting is_active = FALSE (non-destructive). loadBuBySlug()/session both filter
@@ -85,6 +85,22 @@ const SLA_CALENDAR = {
   business_hours: [1, 2, 3, 4, 5].map((day) => ({ day, start: "08:00", end: "17:00" })),
 };
 
+const AT_RISK_THRESHOLD_PCT = 80;
+const BUSINESS_HOUR = 60; // minutes
+
+// Initial GLOBAL SLA policy set (account_id = NULL, business_unit_id = NULL) —
+// applies to every client. Targets are in BUSINESS minutes on SLA_CALENDAR.
+// Values are business decisions kept in data (here), never in the SLA engine.
+const SLA_POLICIES: ReadonlyArray<{
+  priority: string;
+  responseMinutes: number;
+  resolutionMinutes: number;
+}> = [
+  { priority: "P1", responseMinutes: 2 * BUSINESS_HOUR, resolutionMinutes: 24 * BUSINESS_HOUR },
+  { priority: "P2", responseMinutes: 8 * BUSINESS_HOUR, resolutionMinutes: 48 * BUSINESS_HOUR },
+  { priority: "P3", responseMinutes: 24 * BUSINESS_HOUR, resolutionMinutes: 120 * BUSINESS_HOUR },
+];
+
 /** Upsert 18 client accounts, each with one business unit (slug = ClickUp code). */
 async function seedClients(client: PoolClient): Promise<{ accounts: number; bus: number }> {
   let accounts = 0;
@@ -144,17 +160,36 @@ async function seedGlobalStatusMappings(client: PoolClient): Promise<number> {
   return n;
 }
 
-async function seedSlaCalendar(client: PoolClient): Promise<number> {
-  const exists = await client.query("SELECT 1 FROM sla_calendars WHERE name = $1", [
-    SLA_CALENDAR.name,
-  ]);
-  if (exists.rowCount) return 0;
-  await client.query(
+/** Ensure the business calendar exists; returns its id (whether inserted or pre-existing). */
+async function seedSlaCalendar(client: PoolClient): Promise<{ id: string; inserted: boolean }> {
+  const existing = await client.query<{ id: string }>(
+    "SELECT id FROM sla_calendars WHERE name = $1",
+    [SLA_CALENDAR.name]
+  );
+  if (existing.rowCount) return { id: existing.rows[0].id, inserted: false };
+  const ins = await client.query<{ id: string }>(
     `INSERT INTO sla_calendars (name, timezone, business_hours)
-       VALUES ($1, $2, $3::jsonb)`,
+       VALUES ($1, $2, $3::jsonb) RETURNING id`,
     [SLA_CALENDAR.name, SLA_CALENDAR.timezone, JSON.stringify(SLA_CALENDAR.business_hours)]
   );
-  return 1;
+  return { id: ins.rows[0].id, inserted: true };
+}
+
+/** Global SLA policy set (account_id/business_unit_id = NULL). Replace-style for idempotency. */
+async function seedGlobalSlaPolicies(client: PoolClient, calendarId: string): Promise<number> {
+  await client.query("DELETE FROM sla_policies");
+  let n = 0;
+  for (const p of SLA_POLICIES) {
+    await client.query(
+      `INSERT INTO sla_policies
+         (account_id, business_unit_id, priority, calendar_id,
+          response_target_minutes, resolution_target_minutes, at_risk_threshold_pct, is_active)
+       VALUES (NULL, NULL, $1::priority_level, $2, $3, $4, $5, TRUE)`,
+      [p.priority, calendarId, p.responseMinutes, p.resolutionMinutes, AT_RISK_THRESHOLD_PCT]
+    );
+    n += 1;
+  }
+  return n;
 }
 
 async function main(): Promise<void> {
@@ -166,8 +201,9 @@ async function main(): Promise<void> {
     const { accounts, bus } = await seedClients(client);
     const legacyRetired = await retireLegacyAccount(client);
     const smCount = await seedGlobalStatusMappings(client);
-    const calInserted = await seedSlaCalendar(client);
-    return { accounts, bus, legacyRetired, smCount, calInserted };
+    const cal = await seedSlaCalendar(client);
+    const policyCount = await seedGlobalSlaPolicies(client, cal.id);
+    return { accounts, bus, legacyRetired, smCount, calInserted: cal.inserted, policyCount };
   });
 
   console.log("[seed] client accounts   :", summary.accounts, "upserted (each active)");
@@ -177,8 +213,8 @@ async function main(): Promise<void> {
     summary.legacyRetired ? "retired (is_active = FALSE)" : "not present"
   );
   console.log("[seed] status_mappings   :", summary.smCount, "global (account_id = NULL); 'business requirement' unmapped");
-  console.log("[seed] sla_calendars     :", summary.calInserted === 1 ? "1 inserted" : "already present");
-  console.log("[seed] sla_policies      : 0 (intentionally none — awaiting real targets)");
+  console.log("[seed] sla_calendars     :", summary.calInserted ? "1 inserted" : "already present");
+  console.log("[seed] sla_policies      :", summary.policyCount, "global (P1–P3, business-hours targets)");
   console.log("[seed] done.");
 }
 

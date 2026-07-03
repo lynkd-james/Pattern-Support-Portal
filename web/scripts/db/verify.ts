@@ -138,7 +138,8 @@ async function main(): Promise<void> {
   await expectCount("status_mappings present", "SELECT count(*) AS n FROM status_mappings", 6);
   await expectCount("status_mappings all global", "SELECT count(*) AS n FROM status_mappings WHERE account_id IS NULL", 6);
   await expectCount("sla_calendars", "SELECT count(*) AS n FROM sla_calendars", 1);
-  await expectCount("sla_policies (none yet)", "SELECT count(*) AS n FROM sla_policies", 0);
+  await expectCount("sla_policies (global P1-P3)", "SELECT count(*) AS n FROM sla_policies", 3);
+  await expectCount("sla_policies all global", "SELECT count(*) AS n FROM sla_policies WHERE account_id IS NULL AND business_unit_id IS NULL", 3);
 
   // Guard: confirm "business requirement" was NOT mapped (must quarantine).
   const br = await query<{ n: string }>(
