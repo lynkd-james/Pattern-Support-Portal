@@ -12,6 +12,12 @@ Two decisions reshaped the model:
 
 2. **Simplified auth (MVP).** Entra ID / B2B federation is out. Customers log in by **magic link**. All access control is enforced at the **data layer** (account + business-unit scoping), not by identity federation. The guiding principle: *we are building a reporting window into our support system, not integrating identity systems between companies.*
 
+   > **SUPERSEDED (Stage 8a, 2026-07):** magic-link login was never shipped.
+   > The portal authenticates with **Microsoft Entra ID** (multi-tenant app,
+   > tenant pinned at provisioning) — see `docs/auth.md`. The data-layer
+   > authorisation principle above is unchanged: Entra authenticates, the
+   > portal DB authorises. `magic_link_tokens` is retired (kept, unused).
+
 ## End-to-end data flow
 
 ```
@@ -59,6 +65,11 @@ The portal API filters strictly on `visibility_state = 'published'`. The `custom
 
 ## Authentication & isolation (MVP)
 
+> **SUPERSEDED (Stage 8a):** the magic-link design below was replaced by Entra
+> ID sign-in before launch — see `docs/auth.md`. `portal_sessions` (hashed
+> server-side sessions), `portal_users` and the BU-grant model carry over
+> unchanged; `magic_link_tokens` is retired (kept, unused).
+
 Magic-link login: a user enters their email, receives a one-time link (`magic_link_tokens`, single-use, short TTL, **hashed** — raw tokens are never stored), and on consumption gets a server-side session (`portal_sessions`, also hashed). `portal_users` belong to one account; scope is either `account_wide` or an explicit set of business units via `portal_user_business_units`.
 
 **Isolation is enforced at the data layer regardless of how simple the login is.** Every projection row carries `account_id` + `business_unit_id`; every portal query is constrained to the authenticated user's account and granted BUs. Postgres Row-Level Security is recommended as defence-in-depth on `customer_tickets` and `customer_ticket_timeline`. No cross-account visibility is possible.
@@ -86,7 +97,12 @@ Portal read paths are served by **partial indexes on `visibility_state = 'publis
 
 ## Assumptions
 
-1. Account → business unit is the tenancy hierarchy (Pepkor → Tekkie Town / DUNNS / CODE / Refinery / Ayana / SPCC).
+1. Account → business unit is the tenancy hierarchy (Pepkor Speciality Group → Tekkie Town / DUNNS / CODE / Refinery / Ayana / SPCC).
+   > **SUPERSEDED:** the shipped model makes each ClickUp `Customer` code an
+   > independent client — one account + one business unit (slug = the code);
+   > the legacy umbrella account is retired (`is_active = FALSE`). Umbrella
+   > groups (SG / LAR / CUMi) are a future account-grouping requirement. See
+   > CLAUDE.md §7 (authoritative).
 2. One ClickUp task = one ticket (`clickup_task_id` is the idempotency key).
 3. A **dedicated ClickUp field** carries the authored `customer_summary`; nothing else feeds the customer description.
 4. BU attribution comes from a **structured ClickUp field**, not inference.

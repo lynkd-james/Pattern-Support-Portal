@@ -1,13 +1,18 @@
 // =============================================================================
-// Idempotent migration runner.
+// Migration runner (Stage 8a: ordered incremental migrations).
 //
-// Applies the existing repo-root `schema.sql` WITHOUT modifying it. `schema.sql`
-// itself is not idempotent (CREATE TYPE / CREATE TABLE have no IF NOT EXISTS),
-// so idempotency is provided by a `schema_migrations` ledger: the file is hashed
-// and applied exactly once, inside a transaction. Re-running is a safe no-op.
-//
-// Expects a FRESH database (nothing applied yet). To re-run during development,
-// recreate the database (see scripts/db/README.md), then migrate again.
+// Two-part model, recorded in the `schema_migrations` ledger:
+//   1. BASELINE — the repo-root `schema.sql` (authoritative DDL for FRESH
+//      installs). Applied exactly once, on an empty database. If the baseline
+//      was applied earlier with a different checksum, that is INFORMATIONAL:
+//      schema evolution happens via migration files, and schema.sql is kept in
+//      sync for fresh installs only.
+//   2. MIGRATIONS — `scripts/db/migrations/*.sql`, applied in filename order,
+//      each inside a transaction and recorded with its checksum. Re-running is
+//      a no-op; EDITING an already-applied migration file is a hard error
+//      (write a new file instead). Migration files are written idempotently
+//      (IF NOT EXISTS) so they also no-op on a fresh install whose schema.sql
+//      already contains the change.
 //
 // Usage:  npm run db:migrate      (run from the web/ directory)
 // Reads DATABASE_URL from the environment (.env). No credentials are hard-coded.
@@ -15,8 +20,8 @@
 
 import "dotenv/config";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { resolve, join } from "node:path";
 
 import { env } from "../../src/server/env";
 import { closePool, getPool, withTransaction } from "../../src/server/db";
@@ -25,7 +30,11 @@ const SCHEMA_PATH = resolve(
   process.cwd(),
   process.env.SCHEMA_SQL_PATH ?? "../schema.sql"
 );
-const MIGRATION_NAME = "schema.sql";
+const MIGRATIONS_DIR = resolve(process.cwd(), "scripts/db/migrations");
+const BASELINE_NAME = "schema.sql";
+
+const checksumOf = (sql: string): string =>
+  createHash("sha256").update(sql).digest("hex");
 
 async function ensureLedger(): Promise<void> {
   await getPool().query(`
@@ -37,43 +46,91 @@ async function ensureLedger(): Promise<void> {
   `);
 }
 
+async function appliedChecksum(filename: string): Promise<string | null> {
+  const res = await getPool().query<{ checksum: string }>(
+    "SELECT checksum FROM schema_migrations WHERE filename = $1",
+    [filename]
+  );
+  return res.rows[0]?.checksum ?? null;
+}
+
+async function applyOnce(filename: string, sql: string): Promise<void> {
+  await withTransaction(async (client) => {
+    await client.query(sql);
+    await client.query(
+      "INSERT INTO schema_migrations (filename, checksum) VALUES ($1, $2)",
+      [filename, checksumOf(sql)]
+    );
+  });
+}
+
+async function applyBaseline(): Promise<void> {
+  const sql = readFileSync(SCHEMA_PATH, "utf8");
+  const checksum = checksumOf(sql);
+  const existing = await appliedChecksum(BASELINE_NAME);
+
+  if (existing === null) {
+    console.log(`[migrate] baseline    : applying ${SCHEMA_PATH} (fresh install)`);
+    await applyOnce(BASELINE_NAME, sql);
+    console.log("[migrate] baseline    : applied and recorded.");
+    return;
+  }
+  if (existing === checksum) {
+    console.log("[migrate] baseline    : already applied (unchanged).");
+    return;
+  }
+  // Baseline drift is expected once migrations exist: schema.sql tracks the
+  // full DDL for fresh installs, while applied databases evolve via migrations.
+  console.log(
+    "[migrate] baseline    : schema.sql differs from the applied baseline — " +
+      "OK (fresh-install DDL evolves alongside migrations; this database is " +
+      "updated by the migration files below)."
+  );
+}
+
+async function applyMigrations(): Promise<void> {
+  if (!existsSync(MIGRATIONS_DIR)) {
+    console.log("[migrate] migrations  : none (directory absent).");
+    return;
+  }
+  const files = readdirSync(MIGRATIONS_DIR)
+    .filter((f) => f.endsWith(".sql"))
+    .sort();
+  if (files.length === 0) {
+    console.log("[migrate] migrations  : none found.");
+    return;
+  }
+
+  for (const file of files) {
+    const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf8");
+    const checksum = checksumOf(sql);
+    const existing = await appliedChecksum(file);
+
+    if (existing === null) {
+      console.log(`[migrate] migration   : applying ${file} …`);
+      await applyOnce(file, sql);
+      console.log(`[migrate] migration   : ${file} applied and recorded.`);
+    } else if (existing === checksum) {
+      console.log(`[migrate] migration   : ${file} already applied (no-op).`);
+    } else {
+      throw new Error(
+        `[migrate] ${file} has CHANGED since it was applied ` +
+          `(applied ${existing.slice(0, 12)}…, on disk ${checksum.slice(0, 12)}…). ` +
+          "Applied migrations are immutable — add a new migration file instead."
+      );
+    }
+  }
+}
+
 async function main(): Promise<void> {
   if (!env.databaseUrl) {
     throw new Error("DATABASE_URL is not set. Copy .env.example to .env first.");
   }
 
-  const sql = readFileSync(SCHEMA_PATH, "utf8");
-  const checksum = createHash("sha256").update(sql).digest("hex");
-  console.log(`[migrate] schema file : ${SCHEMA_PATH}`);
-  console.log(`[migrate] checksum    : ${checksum.slice(0, 12)}…`);
-
   await ensureLedger();
-
-  const existing = await getPool().query<{ checksum: string }>(
-    "SELECT checksum FROM schema_migrations WHERE filename = $1",
-    [MIGRATION_NAME]
-  );
-
-  if (existing.rowCount && existing.rows[0].checksum === checksum) {
-    console.log("[migrate] already applied — nothing to do (idempotent no-op).");
-    return;
-  }
-  if (existing.rowCount && existing.rows[0].checksum !== checksum) {
-    throw new Error(
-      "[migrate] schema.sql has changed since it was applied. This runner does " +
-        "not auto-migrate drift. Apply a new migration or recreate the database."
-    );
-  }
-
-  console.log("[migrate] applying schema.sql …");
-  await withTransaction(async (client) => {
-    await client.query(sql);
-    await client.query(
-      "INSERT INTO schema_migrations (filename, checksum) VALUES ($1, $2)",
-      [MIGRATION_NAME, checksum]
-    );
-  });
-  console.log("[migrate] done. schema applied and recorded.");
+  await applyBaseline();
+  await applyMigrations();
+  console.log("[migrate] done.");
 }
 
 main()

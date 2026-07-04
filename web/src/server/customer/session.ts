@@ -2,18 +2,20 @@
 // Session abstraction (server-only).
 //
 //   SessionProvider                      <- the API depends ONLY on this
-//     ├── PlaceholderSessionProvider     <- active now (no real auth)
-//     └── EntraIDSessionProvider         <- added in Stage 8 (provider swap)
+//     ├── PlaceholderSessionProvider     <- dev only (no real auth)
+//     └── EntraIDSessionProvider         <- Stage 8a (AUTH_PROVIDER=entra)
 //
-// The API resolves scope/session via `getSessionProvider()` and never knows which
-// concrete provider is in use. Wiring real auth in Stage 8 is therefore a swap in
-// the factory below — not an API rewrite.
+// The API resolves scope/session via `getSessionProvider()` and never knows
+// which concrete provider is in use. The factory switches on AUTH_PROVIDER and
+// refuses to run the placeholder in production without an explicit override.
 //
 // Contract invariant preserved: the client NEVER sends an account id; scope is
 // always resolved server-side.
 // =============================================================================
 
+import { env } from "../env";
 import { query } from "../db";
+import { EntraIDSessionProvider } from "./entraSession";
 import type { SessionResponse } from "@/lib/types";
 
 export interface RequestScope {
@@ -76,15 +78,30 @@ class PlaceholderSessionProvider implements SessionProvider {
 }
 
 // -----------------------------------------------------------------------------
-// Factory — the single seam the API depends on.
-// Stage 8: return new EntraIDSessionProvider() (e.g. when AUTH_PROVIDER==='entra').
+// Factory — the single seam the API depends on. Switches on AUTH_PROVIDER.
 // -----------------------------------------------------------------------------
 
 let provider: SessionProvider | null = null;
 
 export function getSessionProvider(): SessionProvider {
   if (!provider) {
-    provider = new PlaceholderSessionProvider();
+    if (env.authProvider === "entra") {
+      provider = new EntraIDSessionProvider();
+    } else if (env.authProvider === "placeholder") {
+      // Fail-fast guard: the placeholder performs NO authentication and must
+      // never run in production unless explicitly overridden.
+      if (env.nodeEnv === "production" && !env.allowPlaceholderAuth) {
+        throw new Error(
+          "AUTH_PROVIDER=placeholder is not allowed in production. " +
+            "Set AUTH_PROVIDER=entra (or ALLOW_PLACEHOLDER_AUTH=true to override explicitly)."
+        );
+      }
+      provider = new PlaceholderSessionProvider();
+    } else {
+      throw new Error(
+        `Unknown AUTH_PROVIDER "${env.authProvider}". Use "entra" or "placeholder".`
+      );
+    }
   }
   return provider;
 }

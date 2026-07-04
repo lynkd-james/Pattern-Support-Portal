@@ -141,6 +141,41 @@ async function main(): Promise<void> {
   await expectCount("sla_policies (global P1-P3)", "SELECT count(*) AS n FROM sla_policies", 3);
   await expectCount("sla_policies all global", "SELECT count(*) AS n FROM sla_policies WHERE account_id IS NULL AND business_unit_id IS NULL", 3);
 
+  // --- Portal auth structural invariants (Stage 8a) -------------------------
+  // Scoped to ACTIVE users: an inactive row without a tenant GUID is a
+  // legitimate onboarding state (provision inactive, activate once captured).
+
+  await expectCount(
+    "every active portal user has an entra_tenant_id",
+    `SELECT count(*) AS n FROM portal_users
+      WHERE is_active = TRUE AND entra_tenant_id IS NULL`,
+    0
+  );
+  await expectCount(
+    "no active portal user under an inactive account",
+    `SELECT count(*) AS n FROM portal_users u
+       JOIN accounts a ON a.id = u.account_id
+      WHERE u.is_active = TRUE AND a.is_active = FALSE`,
+    0
+  );
+  await expectCount(
+    "every active non-account-wide portal user has >= 1 BU grant",
+    `SELECT count(*) AS n FROM portal_users u
+      WHERE u.is_active = TRUE AND u.account_wide = FALSE
+        AND NOT EXISTS (
+          SELECT 1 FROM portal_user_business_units g WHERE g.user_id = u.id
+        )`,
+    0
+  );
+  await expectCount(
+    "no BU grant crosses the user's account (tenancy isolation)",
+    `SELECT count(*) AS n FROM portal_user_business_units g
+       JOIN portal_users u ON u.id = g.user_id
+       JOIN business_units b ON b.id = g.business_unit_id
+      WHERE b.account_id <> u.account_id`,
+    0
+  );
+
   // Guard: confirm "business requirement" was NOT mapped (must quarantine).
   const br = await query<{ n: string }>(
     "SELECT count(*) AS n FROM status_mappings WHERE clickup_status = 'business requirement'"

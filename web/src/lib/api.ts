@@ -32,6 +32,12 @@ async function getJson<T>(url: string): Promise<T> {
     headers: { Accept: "application/json" },
     credentials: "include",
   });
+  // Session expired/absent: hand off to the sign-in screen. The 401 comes from
+  // the server-side session layer (the security boundary); this is UX only.
+  if (res.status === 401 && typeof window !== "undefined") {
+    window.location.assign("/login");
+    throw new Error("Not signed in");
+  }
   if (!res.ok) {
     let message = `Request failed (${res.status})`;
     try {

@@ -97,16 +97,27 @@ export default function DashboardPage() {
       style={{ fontFamily: FONT_STACK }}
     >
       <div className="mx-auto max-w-7xl px-6 py-10">
-        <header className="mb-8">
-          <img
-            src="/pattern-logo.svg"
-            alt="Pattern"
-            className="mb-4 h-10 w-auto"
-          />
-          <h1 className="text-2xl font-medium tracking-tight text-[#F7F2E8]">Support Portal</h1>
-          <p className="mt-1.5 text-sm text-[#9C8E78]">
-            {session ? `${session.account.name} · ${session.user.displayName ?? session.user.email}` : " "}
-          </p>
+        <header className="mb-8 flex items-start justify-between">
+          <div>
+            <img
+              src="/pattern-logo.svg"
+              alt="Pattern"
+              className="mb-4 h-10 w-auto"
+            />
+            <h1 className="text-2xl font-medium tracking-tight text-[#F7F2E8]">Support Portal</h1>
+            <p className="mt-1.5 text-sm text-[#9C8E78]">
+              {session ? `${session.account.name} · ${session.user.displayName ?? session.user.email}` : " "}
+            </p>
+          </div>
+          {/* Server-side revocation; the cookie clear alone is never trusted. */}
+          <form method="post" action="/api/auth/logout">
+            <button
+              type="submit"
+              className="rounded-md border border-[#3A2D1F] px-3 py-1.5 text-sm text-[#9C8E78] transition-colors hover:bg-[#221A11] hover:text-[#D9CFBE]"
+            >
+              Sign out
+            </button>
+          </form>
         </header>
 
         <section className="mb-8">

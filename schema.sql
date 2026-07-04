@@ -58,8 +58,11 @@ CREATE TYPE sync_status  AS ENUM ('RUNNING', 'SUCCESS', 'PARTIAL', 'FAILED');
 
 -- =============================================================================
 -- TENANCY: ACCOUNTS and BUSINESS UNITS
--- account (e.g. Pepkor) -> business_unit (Tekkie Town, DUNNS, CODE, Refinery,
--- Ayana, SPCC). All isolation keys off account_id + business_unit_id.
+-- Current model: each ClickUp Customer code is an independent client = one
+-- account + one business_unit (slug = the ClickUp code). Umbrella groups
+-- (Pepkor Speciality Group / L.A. Retail / Cape Union Mart International) are a
+-- future account-grouping concern, not modelled yet. All isolation keys off
+-- account_id + business_unit_id.
 -- =============================================================================
 
 CREATE TABLE accounts (
@@ -277,22 +280,37 @@ CREATE TABLE customer_ticket_timeline (
 );
 
 -- =============================================================================
--- AUTHENTICATION — magic-link (MVP). Pattern issues short-lived login links and
--- session tokens. Raw tokens are NEVER stored; only hashes.
--- All authorization is enforced at the data layer (account/BU scope below).
+-- AUTHENTICATION — Microsoft Entra ID (Stage 8a). Entra authenticates; the
+-- portal DB authorises: identities map to portal_users (tenant pinned at
+-- provisioning; oid bound on first login) and unprovisioned identities are
+-- denied. Sessions are server-side rows; raw tokens are NEVER stored, only
+-- SHA-256 hashes. All authorization is enforced at the data layer
+-- (account/BU scope below). See docs/auth.md.
+-- NOTE: magic_link_tokens below is RETIRED (pre-Entra MVP design; kept, unused).
 -- =============================================================================
 
 CREATE TABLE portal_users (
-  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  account_id    UUID NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
-  email         CITEXT NOT NULL,
-  display_name  TEXT,
-  account_wide  BOOLEAN NOT NULL DEFAULT FALSE, -- true => all BUs in account; else use grants below
-  is_active     BOOLEAN NOT NULL DEFAULT TRUE,
-  last_login_at TIMESTAMPTZ,
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT portal_users_email_key UNIQUE (email)
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id      UUID NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
+  email           CITEXT NOT NULL,
+  display_name    TEXT,
+  account_wide    BOOLEAN NOT NULL DEFAULT FALSE, -- true => all BUs in account; else use grants below
+  -- Entra identity (Stage 8a). Tenant GUID is captured at PROVISIONING time —
+  -- first-login email matching requires token tid = entra_tenant_id (NULL =
+  -- cannot log in; provision inactive until captured). oid is bound on first
+  -- successful login; (tid, oid) is the sole login key thereafter.
+  entra_tenant_id TEXT,
+  entra_object_id TEXT,
+  is_active       BOOLEAN NOT NULL DEFAULT TRUE,
+  last_login_at   TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT portal_users_email_key UNIQUE (email),
+  -- Bound implies pinned: an oid binding without a provisioned tenant would
+  -- escape the partial unique index (NULLs are distinct) and the pinning rule.
+  CONSTRAINT portal_users_entra_binding_chk CHECK (
+    entra_object_id IS NULL OR entra_tenant_id IS NOT NULL
+  )
 );
 
 -- Explicit per-BU grants for users that are not account_wide.
@@ -350,7 +368,7 @@ CREATE TABLE audit_events (
 
 CREATE TABLE sync_runs (
   id               BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  source_system    TEXT NOT NULL,      -- 'clickup' | 'outlook' | 'transform'
+  source_system    TEXT NOT NULL,      -- 'clickup' | 'outlook' | 'transform' | 'sla'
   status           sync_status NOT NULL DEFAULT 'RUNNING',
   started_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   finished_at      TIMESTAMPTZ,
@@ -391,6 +409,9 @@ CREATE INDEX idx_customer_tickets_number_trgm ON customer_tickets USING gin (tic
 CREATE INDEX idx_customer_timeline_ticket ON customer_ticket_timeline (customer_ticket_id, occurred_at);
 
 -- AUTH
+CREATE UNIQUE INDEX idx_portal_users_entra_identity
+  ON portal_users (entra_tenant_id, entra_object_id)
+  WHERE entra_object_id IS NOT NULL;
 CREATE INDEX idx_portal_user_bu_user ON portal_user_business_units (user_id);
 CREATE INDEX idx_magic_tokens_user   ON magic_link_tokens (user_id, expires_at);
 CREATE INDEX idx_portal_sessions_user

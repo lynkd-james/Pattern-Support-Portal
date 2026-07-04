@@ -9,7 +9,7 @@ yourself against a database you control.
 
 | Script | npm command | Effect |
 | --- | --- | --- |
-| `migrate.ts` | `npm run db:migrate` | Applies the repo-root `schema.sql` **once**, recorded in a `schema_migrations` ledger. Idempotent: re-running is a no-op. |
+| `migrate.ts` | `npm run db:migrate` | Applies the repo-root `schema.sql` **once** (fresh-install baseline), then every `scripts/db/migrations/*.sql` in filename order — all recorded in a `schema_migrations` ledger. Idempotent: re-running is a no-op. |
 | `seed.ts` | `npm run db:seed` | **Bootstrap only.** Seeds currently-supported client accounts + one business unit each (slug = ClickUp customer code), global status mappings, and one SLA calendar scaffold; retires the legacy `pepkor` account via `is_active = FALSE`. **No SLA policies.** Idempotent. |
 | `verify.ts` | `npm run db:verify` | Read-only. Confirms extensions, enum types, tables, and **structural tenancy invariants** (client-count-agnostic). Exits non-zero on any failure. Writes nothing. |
 
@@ -30,11 +30,23 @@ sync resolver reads `business_units` live).
 Prefer migrations/admin data changes over continually editing `seed.ts` for
 ongoing onboarding.
 
-The migration applies `../schema.sql` **without modifying it**. Because that file
-is not itself idempotent (`CREATE TYPE` / `CREATE TABLE` have no `IF NOT EXISTS`),
-the runner guards it with a `schema_migrations` ledger and applies it exactly
-once. It therefore expects a **fresh database**; to re-run in development, drop
-and recreate the database (below), then migrate again.
+### How migrations work (Stage 8a)
+
+The runner has a two-part model, all recorded in the `schema_migrations` ledger:
+
+1. **Baseline** — the repo-root `schema.sql` (authoritative DDL for **fresh**
+   installs) is applied exactly once, on an empty database. If it later differs
+   from the applied checksum that is informational only: applied databases
+   evolve via migration files, while `schema.sql` is kept in sync for fresh
+   installs.
+2. **Migrations** — `scripts/db/migrations/*.sql`, applied in filename order,
+   each in a transaction and checksummed. Re-running is a no-op; **editing an
+   already-applied migration file is a hard error** (add a new file instead).
+   Write migration files idempotently (`IF NOT EXISTS`) so they also no-op on a
+   fresh install whose `schema.sql` already contains the change.
+
+To evolve the schema: add `scripts/db/migrations/NNNN_description.sql` **and**
+fold the same DDL into `schema.sql`.
 
 ## Prerequisites
 

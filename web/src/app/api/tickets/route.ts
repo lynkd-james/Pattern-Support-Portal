@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSessionProvider } from "@/server/customer/session";
 import { listTickets } from "@/server/customer/queries";
+import { apiErrorResponse } from "@/server/apiError";
 import type { PortalStage, PriorityLevel, SlaState, TicketListQuery } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -47,9 +48,6 @@ export async function GET(req: Request) {
     const result = await listTickets(scope, q);
     return NextResponse.json(result, { status: 200 });
   } catch (err) {
-    return NextResponse.json(
-      { error: { code: "INTERNAL", message: err instanceof Error ? err.message : "Unexpected error" } },
-      { status: 500 }
-    );
+    return apiErrorResponse(err, "tickets/list");
   }
 }

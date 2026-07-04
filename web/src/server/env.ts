@@ -95,6 +95,22 @@ export const env = {
 
   // Publishing (Stage 5+) — safe default
   autoPublishEnabled: readBool("AUTO_PUBLISH_ENABLED", false),
+
+  // Portal authentication (Stage 8a). 'placeholder' (dev default) | 'entra'.
+  authProvider: readString("AUTH_PROVIDER") ?? "placeholder",
+  authEntraClientId: readString("AUTH_ENTRA_CLIENT_ID"),
+  authEntraClientSecret: readString("AUTH_ENTRA_CLIENT_SECRET"),
+  // Multi-tenant sign-in: any org authenticates; the portal DB authorises.
+  authEntraAuthority:
+    readString("AUTH_ENTRA_AUTHORITY") ??
+    "https://login.microsoftonline.com/organizations",
+  // Absolute base URL of the portal (redirect URI base), e.g. https://portal.example.com
+  portalBaseUrl: readString("PORTAL_BASE_URL"),
+  sessionIdleHours: readInt("SESSION_IDLE_HOURS", 8),
+  sessionMaxHours: readInt("SESSION_MAX_HOURS", 720),
+  // Explicit escape hatch: placeholder auth refuses to run in production
+  // without this (see customer/session.ts factory).
+  allowPlaceholderAuth: readBool("ALLOW_PLACEHOLDER_AUTH", false),
 } as const;
 
 // ---- grouped, fail-fast accessors ------------------------------------------
@@ -139,6 +155,26 @@ export function requireGraph(): {
   };
 }
 
+/** Required when AUTH_PROVIDER = 'entra' (Stage 8a portal sign-in). */
+export function requirePortalAuth(): {
+  clientId: string;
+  clientSecret: string;
+  authority: string;
+  baseUrl: string;
+} {
+  const missing: string[] = [];
+  if (!env.authEntraClientId) missing.push("AUTH_ENTRA_CLIENT_ID");
+  if (!env.authEntraClientSecret) missing.push("AUTH_ENTRA_CLIENT_SECRET");
+  if (!env.portalBaseUrl) missing.push("PORTAL_BASE_URL");
+  if (missing.length) throw new MissingEnvError(missing, "portal auth (Entra)");
+  return {
+    clientId: env.authEntraClientId!,
+    clientSecret: env.authEntraClientSecret!,
+    authority: env.authEntraAuthority,
+    baseUrl: env.portalBaseUrl!.replace(/\/+$/, ""),
+  };
+}
+
 /**
  * Validate every known variable at once. Useful for a future `env:check` task.
  * `requireIntegrations=false` (default) validates only what Stage 1 needs, so
@@ -169,6 +205,10 @@ export function describeConfig(): Record<string, string> {
     GRAPH_TENANT_ID: mask(env.graphTenantId),
     GRAPH_CLIENT_ID: mask(env.graphClientId),
     GRAPH_CLIENT_SECRET: mask(env.graphClientSecret),
+    AUTH_PROVIDER: env.authProvider,
+    AUTH_ENTRA_CLIENT_ID: mask(env.authEntraClientId),
+    AUTH_ENTRA_CLIENT_SECRET: mask(env.authEntraClientSecret),
+    PORTAL_BASE_URL: mask(env.portalBaseUrl),
     AUTO_PUBLISH_ENABLED: String(env.autoPublishEnabled),
     PGPOOL_MAX: String(env.pgPoolMax),
     PG_DISABLE_SSL: String(env.pgDisableSsl),
