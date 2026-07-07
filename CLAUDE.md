@@ -52,8 +52,9 @@ Tickets originate in Outlook, are worked in ClickUp, and are surfaced to custome
             ├── sync/          # resolve.ts (pure), clickupSync.ts, ackEmail.ts, outlookSync.ts
             ├── projection/    # transform.ts, visibility.ts (pure), labels.ts
             ├── sla/           # calendar.ts (pure), sla.ts (pure), compute.ts (engine)
-            ├── auth/          # identity.ts (pure), msal.ts, flow.ts, sessionStore.ts, audit.ts
-            └── customer/      # session.ts (factory), entraSession.ts, queries.ts (read-only)
+            ├── auth/          # identity.ts + policy.ts (pure), provider.ts, flow.ts, sessionStore.ts, audit.ts
+            │   └── providers/ # per-provider adapters: entra.ts, entraClaims.ts (pure), msal.ts
+            └── customer/      # session.ts (factory), portalSession.ts, queries.ts (read-only)
 ```
 
 ---
@@ -149,13 +150,13 @@ npm run dev | build | start | lint
 
 - **ClickUp:** REST v2. Token is sent **raw** in the `Authorization` header (no `Bearer`). Archived tickets are retrieved **per-list** via `/list/{id}/task?archived=true` (the `/team/{id}/task` endpoint has no `archived` param) — controlled by `CLICKUP_INCLUDE_ARCHIVED` (default true). `CLICKUP_TEAM_ID` and `CLICKUP_SUPPORT_FOLDER_ID` are **required** (fail fast; no fallbacks).
 - **Microsoft Graph:** app-only (client credentials), application permission `Mail.Read`, ideally scoped to the support mailbox. Reads the "ticket has been logged" acknowledgement email from `GRAPH_SUPPORT_MAILBOX` (default `supportdesk@lynkd.co.za`) to set `acknowledged_at`. If a ticket has no ack email, 0 updates is correct — not a defect.
-- **Session (Stage 8a):** `getSessionProvider()` switches on `AUTH_PROVIDER`. `EntraIDSessionProvider` resolves the httpOnly session cookie against `portal_sessions` (SHA-256 stored; sliding idle + absolute cap + user/account-active checks **on every request**); no valid session → typed 401. `PlaceholderSessionProvider` (`PORTAL_ACCOUNT_SLUG`) is dev-only and refuses to run in production without `ALLOW_PLACEHOLDER_AUTH=true`. Login: multi-tenant Entra (auth-code + PKCE via msal-node); first-login email match requires token `tid` = provisioned `entra_tenant_id`, after which `(tid, oid)` is the sole key. Middleware is cookie-presence UX only — **never** the security boundary. See `docs/auth.md`.
+- **Session & identity (Stage 8a/8b):** `getSessionProvider()` switches on the enabled provider set. `PortalSessionProvider` resolves the httpOnly session cookie against `portal_sessions` (SHA-256 stored; sliding idle + absolute cap + user/account-active checks **on every request**); no valid session → typed 401. `PlaceholderSessionProvider` (`PORTAL_ACCOUNT_SLUG`) is dev-only and refuses production without `ALLOW_PLACEHOLDER_AUTH=true`. Identity is **provider-agnostic** (Stage 8b, `docs/identity-providers.md`): every identity is `(identity_provider, issuer_namespace, subject_identifier)` — namespace pinned at provisioning, subject bound at first login, triple is the sole key thereafter. Adapters (`server/auth/providers/`) are pure claim normalisers emitting `AuthenticatedIdentity`/`IdentityDeny`; provider claim vocabulary (tid/oid/hd/sub) never leaks past them; bootstrap-trust rules live in `auth/policy.ts`. Entra login: multi-tenant auth-code + PKCE via msal-node. Middleware is cookie-presence UX only — **never** the security boundary. See `docs/auth.md`.
 
 ---
 
 ## 9. Configuration (env; all server-only)
 
-Required: `DATABASE_URL` (pooled). ClickUp: `CLICKUP_API_TOKEN`, `CLICKUP_TEAM_ID`, `CLICKUP_SUPPORT_FOLDER_ID` (+ optional `CLICKUP_CUSTOMER_FIELD_NAME`, `CLICKUP_SLA_PRIORITY_FIELD_NAME`, `CLICKUP_SYNC_OVERLAP_MS`, `CLICKUP_INCLUDE_ARCHIVED`). Graph: `GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID`, `GRAPH_CLIENT_SECRET` (+ optional `GRAPH_SUPPORT_MAILBOX`, `GRAPH_SYNC_OVERLAP_MS`). Auth (Stage 8a): `AUTH_PROVIDER` (`entra`|`placeholder`), `AUTH_ENTRA_CLIENT_ID`, `AUTH_ENTRA_CLIENT_SECRET`, `PORTAL_BASE_URL` (+ optional `AUTH_ENTRA_AUTHORITY`, `SESSION_IDLE_HOURS`, `SESSION_MAX_HOURS`, `ALLOW_PLACEHOLDER_AUTH`). Publishing: `AUTO_PUBLISH_ENABLED` (default `false` → tickets park at `ready_for_customer`, not projected). Dev scope: `PORTAL_ACCOUNT_SLUG` (placeholder provider only). Tuning: `PGPOOL_MAX`, `PG_DISABLE_SSL`, `SCHEMA_SQL_PATH`. `env.ts` validates **per subsystem** (DB scripts must not require ClickUp/Graph/auth secrets).
+Required: `DATABASE_URL` (pooled). ClickUp: `CLICKUP_API_TOKEN`, `CLICKUP_TEAM_ID`, `CLICKUP_SUPPORT_FOLDER_ID` (+ optional `CLICKUP_CUSTOMER_FIELD_NAME`, `CLICKUP_SLA_PRIORITY_FIELD_NAME`, `CLICKUP_SYNC_OVERLAP_MS`, `CLICKUP_INCLUDE_ARCHIVED`). Graph: `GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID`, `GRAPH_CLIENT_SECRET` (+ optional `GRAPH_SUPPORT_MAILBOX`, `GRAPH_SYNC_OVERLAP_MS`). Auth (Stage 8b): `AUTH_ENABLED_PROVIDERS` (comma set: `entra`|`google`|`placeholder`; placeholder exclusive; legacy `AUTH_PROVIDER` honoured as alias until Stage 8d), `AUTH_ENTRA_CLIENT_ID`, `AUTH_ENTRA_CLIENT_SECRET`, `PORTAL_BASE_URL` (+ optional `AUTH_ENTRA_AUTHORITY`, `SESSION_IDLE_HOURS`, `SESSION_MAX_HOURS`, `ALLOW_PLACEHOLDER_AUTH`). Publishing: `AUTO_PUBLISH_ENABLED` (default `false` → tickets park at `ready_for_customer`, not projected). Dev scope: `PORTAL_ACCOUNT_SLUG` (placeholder provider only). Tuning: `PGPOOL_MAX`, `PG_DISABLE_SSL`, `SCHEMA_SQL_PATH`. `env.ts` validates **per subsystem** (DB scripts must not require ClickUp/Graph/auth secrets).
 
 ---
 
@@ -171,10 +172,12 @@ Committed on `main`:
 - **Stage 6** — Outlook acknowledgement ingestion (`acknowledged_at`) ✓
 - **Stage 7** — Business-hours SLA engine + milestone computation (`e682a2f`) ✓
 - **Stage 8a** — Microsoft Entra ID authentication: multi-tenant + tenant pinning, DB-backed sessions, ordered migrations, legacy probe-route removal, sanitised API error envelopes (see `docs/auth.md`) ✓
+- **Stage 8b** — Provider-agnostic identity model (`identity_provider` / `issuer_namespace` / `subject_identifier`; adapters + central policy layer; behaviour-preserving Entra refactor — see `docs/identity-providers.md`) ✓
 
 Next:
 
-- **Stage 8b** — Scheduled ~15-min pipeline: advisory-lock orchestrator, `CRON_SECRET`-guarded jobs route runnable **one step per invocation**, expired-session cleanup. Hosting decision pends a worst-case duration measurement (Vercel Cron if it fits with headroom, else recommend Azure-hosted).
+- **Stage 8c** — Google Workspace authentication (`providers/google.ts` via openid-client, parallel `/api/auth/google/*` routes, two-button login, `hd` namespace pinning, `email_verified` require-true policy).
+- **Stage 8d** — Scheduled ~15-min pipeline: advisory-lock orchestrator, `CRON_SECRET`-guarded jobs route runnable **one step per invocation**, expired-session cleanup, legacy `AUTH_PROVIDER` alias removal. Hosting decision pends a worst-case duration measurement (Vercel Cron if it fits with headroom, else recommend Azure-hosted).
 - Later phases: SLA analytics & reporting; admin & scaling features.
 - **Account grouping (known future requirement):** SG / LAR / CUMi umbrella views (a group contact seeing all their brands' tickets). The current one-account-per-code model does not support it. Likely shape: nullable `account_group_id` + group-scoped portal users. Do not build preemptively.
 - **Non-Microsoft client identity:** if a client without an Entra tenant appears, add a second `SessionProvider` (Entra External ID preferred; magic-link revival for no-IdP clients). Do not adopt an identity broker preemptively.

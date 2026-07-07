@@ -141,14 +141,16 @@ async function main(): Promise<void> {
   await expectCount("sla_policies (global P1-P3)", "SELECT count(*) AS n FROM sla_policies", 3);
   await expectCount("sla_policies all global", "SELECT count(*) AS n FROM sla_policies WHERE account_id IS NULL AND business_unit_id IS NULL", 3);
 
-  // --- Portal auth structural invariants (Stage 8a) -------------------------
-  // Scoped to ACTIVE users: an inactive row without a tenant GUID is a
+  // --- Portal auth structural invariants (Stage 8a; identity columns
+  // generalised in Stage 8b) --------------------------------------------------
+  // Scoped to ACTIVE users: an inactive row without an issuer namespace is a
   // legitimate onboarding state (provision inactive, activate once captured).
+  // Bound-implies-pinned and provider-value validity are DB-enforced (CHECKs).
 
   await expectCount(
-    "every active portal user has an entra_tenant_id",
+    "every active portal user has an issuer_namespace",
     `SELECT count(*) AS n FROM portal_users
-      WHERE is_active = TRUE AND entra_tenant_id IS NULL`,
+      WHERE is_active = TRUE AND issuer_namespace IS NULL`,
     0
   );
   await expectCount(

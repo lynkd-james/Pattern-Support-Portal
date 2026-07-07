@@ -280,36 +280,46 @@ CREATE TABLE customer_ticket_timeline (
 );
 
 -- =============================================================================
--- AUTHENTICATION — Microsoft Entra ID (Stage 8a). Entra authenticates; the
--- portal DB authorises: identities map to portal_users (tenant pinned at
--- provisioning; oid bound on first login) and unprovisioned identities are
--- denied. Sessions are server-side rows; raw tokens are NEVER stored, only
--- SHA-256 hashes. All authorization is enforced at the data layer
--- (account/BU scope below). See docs/auth.md.
+-- AUTHENTICATION — provider-agnostic identity model (Stage 8b; see
+-- docs/identity-providers.md). The identity provider authenticates; the
+-- portal DB authorises. Every identity is the triple
+--   (identity_provider, issuer_namespace, subject_identifier):
+-- the namespace is pinned at PROVISIONING (Entra: tenant GUID; Google
+-- Workspace: hosted domain), the subject is bound at FIRST login, and the
+-- triple is the sole login key thereafter. The provider is NOT the
+-- organisation — the organisation boundary is issuer_namespace. Sessions are
+-- server-side rows; raw tokens are NEVER stored, only SHA-256 hashes. All
+-- authorization is enforced at the data layer (account/BU scope below).
 -- NOTE: magic_link_tokens below is RETIRED (pre-Entra MVP design; kept, unused).
 -- =============================================================================
 
 CREATE TABLE portal_users (
-  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  account_id      UUID NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
-  email           CITEXT NOT NULL,
-  display_name    TEXT,
-  account_wide    BOOLEAN NOT NULL DEFAULT FALSE, -- true => all BUs in account; else use grants below
-  -- Entra identity (Stage 8a). Tenant GUID is captured at PROVISIONING time —
-  -- first-login email matching requires token tid = entra_tenant_id (NULL =
-  -- cannot log in; provision inactive until captured). oid is bound on first
-  -- successful login; (tid, oid) is the sole login key thereafter.
-  entra_tenant_id TEXT,
-  entra_object_id TEXT,
-  is_active       BOOLEAN NOT NULL DEFAULT TRUE,
-  last_login_at   TIMESTAMPTZ,
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id         UUID NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
+  email              CITEXT NOT NULL,
+  display_name       TEXT,
+  account_wide       BOOLEAN NOT NULL DEFAULT FALSE, -- true => all BUs in account; else use grants below
+  -- Provider-agnostic identity (Stage 8b). issuer_namespace is captured at
+  -- PROVISIONING time (NULL = cannot log in; provision inactive until
+  -- captured); subject_identifier is bound on first successful login.
+  identity_provider  TEXT NOT NULL DEFAULT 'entra',
+  issuer_namespace   TEXT,
+  subject_identifier TEXT,
+  is_active          BOOLEAN NOT NULL DEFAULT TRUE,
+  last_login_at      TIMESTAMPTZ,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT portal_users_email_key UNIQUE (email),
-  -- Bound implies pinned: an oid binding without a provisioned tenant would
-  -- escape the partial unique index (NULLs are distinct) and the pinning rule.
-  CONSTRAINT portal_users_entra_binding_chk CHECK (
-    entra_object_id IS NULL OR entra_tenant_id IS NOT NULL
+  -- TEXT + CHECK (not enum): provider values evolve by re-issuing this CHECK
+  -- in a transactional migration.
+  CONSTRAINT portal_users_provider_chk CHECK (
+    identity_provider IN ('entra', 'google')
+  ),
+  -- Bound implies pinned: a subject binding without a provisioned namespace
+  -- would escape the partial unique index (NULLs are distinct) and the
+  -- pinning rule.
+  CONSTRAINT portal_users_identity_binding_chk CHECK (
+    subject_identifier IS NULL OR issuer_namespace IS NOT NULL
   )
 );
 
@@ -409,9 +419,9 @@ CREATE INDEX idx_customer_tickets_number_trgm ON customer_tickets USING gin (tic
 CREATE INDEX idx_customer_timeline_ticket ON customer_ticket_timeline (customer_ticket_id, occurred_at);
 
 -- AUTH
-CREATE UNIQUE INDEX idx_portal_users_entra_identity
-  ON portal_users (entra_tenant_id, entra_object_id)
-  WHERE entra_object_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_portal_users_identity
+  ON portal_users (identity_provider, issuer_namespace, subject_identifier)
+  WHERE subject_identifier IS NOT NULL;
 CREATE INDEX idx_portal_user_bu_user ON portal_user_business_units (user_id);
 CREATE INDEX idx_magic_tokens_user   ON magic_link_tokens (user_id, expires_at);
 CREATE INDEX idx_portal_sessions_user

@@ -1,33 +1,42 @@
 // =============================================================================
-// GET /api/auth/callback — complete the Entra sign-in flow (Stage 8a).
+// GET /api/auth/callback — complete the Entra sign-in flow.
 //
-// Validation order (docs/auth.md): state (CSRF, pre-exchange) -> code exchange
-// (the ID token's trust anchor is the authenticated back-channel TLS exchange
-// with the token endpoint — not local signature validation) -> nonce ->
-// tid/oid presence -> iss/tid consistency -> user resolution with TENANT
-// PINNING -> active checks -> first-login oid binding -> session.
+// Stage 8b: the handler is provider-agnostic — it drives an
+// IdentityProviderAdapter (Entra wired on this route; Google gets a parallel
+// route in Stage 8c) and operates exclusively on AuthenticatedIdentity /
+// IdentityDeny. Provider claim vocabulary never appears here.
 //
-// Failure surfaces are deliberately split:
-//   * FLOW failures (missing/expired flow cookie, state mismatch, Entra error
-//     param, failed code exchange) -> redirect to /login?error=auth (retryable,
-//     information-free; detail logged server-side).
-//   * IDENTITY denials (anything after a successfully validated token) -> the
-//     SAME information-free 403 page for every reason, plus an audit_events row
-//     with tid + reason + hashed claimed email (attack telemetry, Amendment 1).
+// Validation order (docs/auth.md, unchanged): state (CSRF, pre-exchange) ->
+// code exchange (back-channel TLS with the token endpoint is the ID token's
+// trust anchor — not local signature validation) -> adapter claim validation
+// (nonce -> namespace -> subject -> issuer consistency) -> user resolution
+// with NAMESPACE PINNING -> active checks -> first-login subject binding ->
+// session.
+//
+// Failure surfaces are deliberately split (Stage 8a semantics preserved):
+//   * FLOW failures (missing/expired flow cookie, state mismatch, provider
+//     mismatch on the cookie, provider error param, failed code exchange)
+//     -> redirect to /login?error=auth (retryable, information-free; detail
+//     logged server-side; frequency is alerting telemetry).
+//   * IDENTITY denials (anything after a successfully redeemed token) -> the
+//     SAME information-free 403 page for every reason, plus an audit_events
+//     row with provider + namespace + reason + hashed claimed email.
 // =============================================================================
 
 import { NextResponse, type NextRequest } from "next/server";
 import { AUTH_FLOW_COOKIE_NAME, SESSION_COOKIE_NAME } from "@/lib/authCookies";
 import { query, withTransaction } from "@/server/db";
 import { createLogger } from "@/server/logger";
-import { redeemAuthCode } from "@/server/auth/msal";
+import { getAdapter } from "@/server/auth/provider";
+import { policyFor } from "@/server/auth/policy";
 import { cookiesSecure, parseFlowSecrets } from "@/server/auth/flow";
 import {
   decideLogin,
-  validateIdTokenClaims,
+  isIdentityDeny,
+  type AuthenticatedIdentity,
   type CandidateUser,
+  type IdentityProviderId,
   type LoginDenyReason,
-  type ValidatedClaims,
 } from "@/server/auth/identity";
 import { auditLoginAdmitted, auditLoginDenied } from "@/server/auth/audit";
 import { createSession } from "@/server/auth/sessionStore";
@@ -35,6 +44,9 @@ import { apiErrorResponse } from "@/server/apiError";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+/** The provider this route serves. Stage 8c adds a parallel Google route. */
+const ROUTE_PROVIDER: IdentityProviderId = "entra";
 
 const log = createLogger("auth");
 
@@ -53,7 +65,7 @@ function clearFlowCookie(res: NextResponse): NextResponse {
 
 /** Retryable flow failure: back to /login with a generic marker. */
 function flowFailure(req: NextRequest, reason: string): NextResponse {
-  log.warn("login_flow_failed", { reason });
+  log.warn("login_flow_failed", { provider: ROUTE_PROVIDER, reason });
   return clearFlowCookie(
     NextResponse.redirect(new URL("/login?error=auth", req.url), 302)
   );
@@ -84,33 +96,40 @@ Pattern Support Portal. If you believe this is a mistake, contact Pattern suppor
 
 async function deniedIdentity(
   reason: LoginDenyReason,
-  claims: Partial<ValidatedClaims>,
+  telemetry: { namespace: string | null; email: string | null },
   user?: CandidateUser | null
 ): Promise<NextResponse> {
-  log.warn("login_denied", { reason, tid: claims.tid ?? null });
-  await auditLoginDenied({
-    tid: claims.tid ?? null,
+  log.warn("login_denied", {
+    provider: ROUTE_PROVIDER,
     reason,
-    claimedEmail: claims.email ?? null,
+    namespace: telemetry.namespace,
+  });
+  await auditLoginDenied({
+    provider: ROUTE_PROVIDER,
+    namespace: telemetry.namespace,
+    reason,
+    claimedEmail: telemetry.email,
     userId: user?.id ?? null,
     accountId: user?.accountId ?? null,
   });
   return denyResponse();
 }
 
-// ---- user lookups ------------------------------------------------------------
+// ---- user lookups (provider-neutral identity columns) ------------------------
 
 const CANDIDATE_SELECT = `
-  SELECT u.id, u.account_id, u.entra_tenant_id, u.entra_object_id,
-         u.is_active AS user_active, a.is_active AS account_active
+  SELECT u.id, u.account_id, u.identity_provider, u.issuer_namespace,
+         u.subject_identifier, u.is_active AS user_active,
+         a.is_active AS account_active
     FROM portal_users u
     JOIN accounts a ON a.id = u.account_id`;
 
 interface CandidateRow {
   id: string;
   account_id: string;
-  entra_tenant_id: string | null;
-  entra_object_id: string | null;
+  identity_provider: IdentityProviderId;
+  issuer_namespace: string | null;
+  subject_identifier: string | null;
   user_active: boolean;
   account_active: boolean;
 }
@@ -120,17 +139,20 @@ const toCandidate = (r: CandidateRow | undefined): CandidateUser | null =>
     ? {
         id: r.id,
         accountId: r.account_id,
-        entraTenantId: r.entra_tenant_id,
-        entraObjectId: r.entra_object_id,
+        identityProvider: r.identity_provider,
+        issuerNamespace: r.issuer_namespace,
+        subjectIdentifier: r.subject_identifier,
         userActive: r.user_active,
         accountActive: r.account_active,
       }
     : null;
 
-async function findBoundUser(tid: string, oid: string): Promise<CandidateUser | null> {
+async function findBoundUser(identity: AuthenticatedIdentity): Promise<CandidateUser | null> {
   const res = await query<CandidateRow>(
-    `${CANDIDATE_SELECT} WHERE u.entra_tenant_id = $1 AND u.entra_object_id = $2`,
-    [tid, oid]
+    `${CANDIDATE_SELECT}
+      WHERE u.identity_provider = $1 AND u.issuer_namespace = $2
+        AND u.subject_identifier = $3`,
+    [identity.provider, identity.issuerNamespace, identity.subjectIdentifier]
   );
   return toCandidate(res.rows[0]);
 }
@@ -148,9 +170,9 @@ export async function GET(req: NextRequest) {
   try {
     const params = req.nextUrl.searchParams;
 
-    // Entra-side error (user cancelled, consent denied, ...) — retryable.
+    // Provider-side error (user cancelled, consent denied, ...) — retryable.
     if (params.get("error")) {
-      return flowFailure(req, `entra_error:${params.get("error")}`);
+      return flowFailure(req, `provider_error:${params.get("error")}`);
     }
 
     const code = params.get("code");
@@ -161,15 +183,18 @@ export async function GET(req: NextRequest) {
     const flowCookie = req.cookies.get(AUTH_FLOW_COOKIE_NAME)?.value;
     const flow = flowCookie ? parseFlowSecrets(flowCookie) : null;
     if (!flow) return flowFailure(req, "missing_flow_cookie");
+    // Cross-flow replay defence: the cookie must belong to THIS route's provider.
+    if (flow.provider !== ROUTE_PROVIDER) return flowFailure(req, "provider_mismatch_cookie");
     if (state !== flow.state) return flowFailure(req, "state_mismatch");
 
-    // Code exchange. Trust anchor: the token comes directly from the token
-    // endpoint over authenticated TLS (back-channel); claim checks are ours.
-    let idTokenClaims: Record<string, unknown>;
+    const adapter = getAdapter(ROUTE_PROVIDER);
+
+    // Back-channel code exchange — the ID token's trust anchor.
+    let rawClaims: Record<string, unknown>;
     try {
-      const result = await redeemAuthCode({ code, codeVerifier: flow.codeVerifier });
-      if (!result?.idTokenClaims) return flowFailure(req, "empty_token_result");
-      idTokenClaims = result.idTokenClaims as Record<string, unknown>;
+      const raw = await adapter.redeemCode({ code, codeVerifier: flow.codeVerifier });
+      if (!raw) return flowFailure(req, "empty_token_result");
+      rawClaims = raw;
     } catch (err) {
       return flowFailure(
         req,
@@ -177,48 +202,65 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // Claim validation (nonce -> tid -> oid -> iss consistency). From here on,
-    // every failure is an IDENTITY denial: uniform 403 + audit.
-    const validated = validateIdTokenClaims(idTokenClaims, flow.nonce);
-    if (validated.kind === "invalid") {
-      const tid = typeof idTokenClaims.tid === "string" ? idTokenClaims.tid : null;
-      return deniedIdentity(validated.reason, { tid: tid ?? undefined });
+    // Adapter claim normalisation (pure). From here on, every failure is an
+    // IDENTITY denial: uniform 403 + audit (telemetry from the typed deny —
+    // raw claims never leave the adapter).
+    const validated = adapter.validateClaims(rawClaims, flow.nonce);
+    if (isIdentityDeny(validated)) {
+      return deniedIdentity(validated.reason, {
+        namespace: validated.issuerNamespace,
+        email: validated.email,
+      });
     }
-    const claims = validated.claims;
+    const identity = validated;
 
-    // Resolution: bound (tid, oid) first; email only for unbound identities,
-    // and only within the provisioned tenant (decideLogin enforces pinning).
-    const boundUser = await findBoundUser(claims.tid, claims.oid);
+    // Resolution: bound (provider, namespace, subject) first; email only for
+    // unbound identities (decideLogin enforces provider + namespace pinning
+    // and the centralised provider policy).
+    const boundUser = await findBoundUser(identity);
     const emailUser =
-      !boundUser && claims.email ? await findUserByEmail(claims.email) : null;
+      !boundUser && identity.email ? await findUserByEmail(identity.email) : null;
 
-    const decision = decideLogin({ claims, boundUser, emailUser });
+    const decision = decideLogin({
+      identity,
+      policy: policyFor(identity.provider),
+      boundUser,
+      emailUser,
+    });
     if (decision.kind === "deny") {
-      return deniedIdentity(decision.reason, claims, boundUser ?? emailUser);
+      return deniedIdentity(
+        decision.reason,
+        { namespace: identity.issuerNamespace, email: identity.email },
+        boundUser ?? emailUser
+      );
     }
 
-    // Admit: bind oid on first login (guarded against a concurrent bind), then
-    // stamp last_login_at.
+    // Admit: bind the subject on first login (guarded against a concurrent
+    // bind), then stamp last_login_at.
     let bound = decision.bind;
     if (decision.bind) {
       const raceLost = await withTransaction(async (client) => {
         const upd = await client.query(
           `UPDATE portal_users
-              SET entra_object_id = $2, last_login_at = now(), updated_at = now()
-            WHERE id = $1 AND entra_object_id IS NULL`,
-          [decision.userId, claims.oid]
+              SET subject_identifier = $2, last_login_at = now(), updated_at = now()
+            WHERE id = $1 AND subject_identifier IS NULL`,
+          [decision.userId, identity.subjectIdentifier]
         );
         if (upd.rowCount === 1) return false;
-        // A concurrent login bound this row first. Identical oid => benign
+        // A concurrent login bound this row first. Identical subject => benign
         // (same person, double-submit); anything else => deny.
-        const cur = await client.query<{ entra_object_id: string | null }>(
-          `SELECT entra_object_id FROM portal_users WHERE id = $1`,
+        const cur = await client.query<{ subject_identifier: string | null }>(
+          `SELECT subject_identifier FROM portal_users WHERE id = $1`,
           [decision.userId]
         );
-        return cur.rows[0]?.entra_object_id !== claims.oid;
+        return cur.rows[0]?.subject_identifier !== identity.subjectIdentifier;
       });
       if (raceLost) {
-        return deniedIdentity("EMAIL_ALREADY_BOUND", claims, emailUser);
+        return deniedIdentity(
+          "EMAIL_ALREADY_BOUND",
+          { namespace: identity.issuerNamespace, email: identity.email },
+          emailUser
+        );
       }
       bound = true;
     } else {
@@ -231,7 +273,8 @@ export async function GET(req: NextRequest) {
     await auditLoginAdmitted({
       userId: decision.userId,
       accountId: decision.accountId,
-      tid: claims.tid,
+      provider: identity.provider,
+      namespace: identity.issuerNamespace,
       bound,
     });
 
@@ -240,7 +283,11 @@ export async function GET(req: NextRequest) {
       ip: req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null,
     });
 
-    log.info("login_admitted", { userId: decision.userId, bound });
+    log.info("login_admitted", {
+      provider: identity.provider,
+      userId: decision.userId,
+      bound,
+    });
 
     // Fixed post-login target (no return-URL parameter exists).
     const res = NextResponse.redirect(new URL("/dashboard", req.url), 302);

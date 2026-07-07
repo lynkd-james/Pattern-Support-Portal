@@ -59,6 +59,65 @@ class MissingEnvError extends Error {
   }
 }
 
+// ---- auth provider set (Stage 8b) -------------------------------------------
+
+export type EnabledProvider = "entra" | "google" | "placeholder";
+const KNOWN_PROVIDERS: ReadonlySet<string> = new Set(["entra", "google", "placeholder"]);
+
+/**
+ * Resolve the set of enabled auth providers from AUTH_ENABLED_PROVIDERS, with
+ * the legacy single-value AUTH_PROVIDER honoured as an alias (sunset: Stage
+ * 8d). Rules: values must be known; 'placeholder' is exclusive; both variables
+ * set => they must agree; neither set => placeholder (dev default). 'google'
+ * is accepted by the vocabulary but not implemented until Stage 8c.
+ */
+function resolveEnabledProviders(
+  listRaw: string | undefined,
+  legacyRaw: string | undefined
+): EnabledProvider[] {
+  const parse = (raw: string): EnabledProvider[] => {
+    const items = [...new Set(raw.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean))];
+    for (const item of items) {
+      if (!KNOWN_PROVIDERS.has(item)) {
+        throw new Error(
+          `Unknown auth provider "${item}" in AUTH_ENABLED_PROVIDERS/AUTH_PROVIDER. ` +
+            `Known: entra, google, placeholder.`
+        );
+      }
+    }
+    if (items.length === 0) return ["placeholder"];
+    if (items.includes("placeholder") && items.length > 1) {
+      throw new Error(
+        `"placeholder" is exclusive and cannot be combined with real providers ` +
+          `(got: ${items.join(", ")}).`
+      );
+    }
+    if (items.includes("google")) {
+      throw new Error(
+        `Auth provider "google" is not implemented yet (arrives in Stage 8c).`
+      );
+    }
+    return items as EnabledProvider[];
+  };
+
+  const fromList = listRaw !== undefined ? parse(listRaw) : null;
+  const fromLegacy = legacyRaw !== undefined ? parse(legacyRaw) : null;
+
+  if (fromList && fromLegacy) {
+    const same =
+      fromList.length === fromLegacy.length &&
+      fromList.every((p) => fromLegacy.includes(p));
+    if (!same) {
+      throw new Error(
+        `AUTH_ENABLED_PROVIDERS (${fromList.join(",")}) conflicts with legacy ` +
+          `AUTH_PROVIDER (${fromLegacy.join(",")}). Remove AUTH_PROVIDER (deprecated).`
+      );
+    }
+    return fromList;
+  }
+  return fromList ?? fromLegacy ?? ["placeholder"];
+}
+
 // ---- parsed (non-throwing) view --------------------------------------------
 // Reading `env` never throws on missing secrets; use the `require*` accessors
 // at the point of use so each subsystem fails fast only for what it needs.
@@ -96,8 +155,15 @@ export const env = {
   // Publishing (Stage 5+) — safe default
   autoPublishEnabled: readBool("AUTO_PUBLISH_ENABLED", false),
 
-  // Portal authentication (Stage 8a). 'placeholder' (dev default) | 'entra'.
-  authProvider: readString("AUTH_PROVIDER") ?? "placeholder",
+  // Portal authentication (Stage 8b): AUTH_ENABLED_PROVIDERS expresses the SET
+  // of enabled providers ('entra' | 'google' | 'placeholder'; comma list).
+  // 'placeholder' is EXCLUSIVE (dev bypass; may not combine with a real
+  // provider). Legacy AUTH_PROVIDER is honoured as a single-item alias until
+  // Stage 8d (fail-fast if both are set and conflict).
+  enabledProviders: resolveEnabledProviders(
+    readString("AUTH_ENABLED_PROVIDERS"),
+    readString("AUTH_PROVIDER")
+  ),
   authEntraClientId: readString("AUTH_ENTRA_CLIENT_ID"),
   authEntraClientSecret: readString("AUTH_ENTRA_CLIENT_SECRET"),
   // Multi-tenant sign-in: any org authenticates; the portal DB authorises.
@@ -205,7 +271,7 @@ export function describeConfig(): Record<string, string> {
     GRAPH_TENANT_ID: mask(env.graphTenantId),
     GRAPH_CLIENT_ID: mask(env.graphClientId),
     GRAPH_CLIENT_SECRET: mask(env.graphClientSecret),
-    AUTH_PROVIDER: env.authProvider,
+    AUTH_ENABLED_PROVIDERS: env.enabledProviders.join(","),
     AUTH_ENTRA_CLIENT_ID: mask(env.authEntraClientId),
     AUTH_ENTRA_CLIENT_SECRET: mask(env.authEntraClientSecret),
     PORTAL_BASE_URL: mask(env.portalBaseUrl),

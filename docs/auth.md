@@ -1,7 +1,19 @@
 # Stage 8a — Entra ID Authentication (design note)
 
 Status: APPROVED & IMPLEMENTED (Stage 8a). Implements CLAUDE.md §10 Stage 8 auth
-with the architecture-review amendments (2026-07-04). Principle: **Entra authenticates;
+with the architecture-review amendments (2026-07-04).
+
+> **Stage 8b supersession note:** the identity columns described below were
+> generalised to the provider-neutral model in Stage 8b — `entra_tenant_id` →
+> `issuer_namespace`, `entra_object_id` → `subject_identifier`, plus
+> `identity_provider` (see `docs/identity-providers.md`, the authority for the
+> identity model). All Stage 8a security behaviour is preserved byte-for-byte;
+> deny-reason codes were renamed accordingly (`TENANT_MISMATCH` →
+> `NAMESPACE_MISMATCH`, `TENANT_NOT_CAPTURED` → `NAMESPACE_NOT_CAPTURED`,
+> `MISSING_TID`/`MISSING_OID` → `MISSING_NAMESPACE`/`MISSING_SUBJECT`) and
+> audit payloads now carry `{provider, namespace, …}` instead of `{tid, …}`
+> (historical rows keep the old key; the audit log is append-only). SQL
+> examples in this document are updated to the new column names. Principle: **Entra authenticates;
 the portal DB authorises.** Unprovisioned identities are denied. The client never
 sends an account id (invariant #3); `RequestScope` and `customer/queries.ts` are
 unchanged.
@@ -230,12 +242,14 @@ client's IT contact. If the GUID is not yet in hand, insert with
 
 ```sql
 -- Account-wide user (sees every BU of the account):
-INSERT INTO portal_users (account_id, email, display_name, account_wide, entra_tenant_id, is_active)
+INSERT INTO portal_users (account_id, email, display_name, account_wide,
+                          identity_provider, issuer_namespace, is_active)
 VALUES (
   (SELECT id FROM accounts WHERE slug = 'pnp'),
   'jane.doe@pnp.example',
   'Jane Doe',
   TRUE,
+  'entra',
   '11111111-2222-3333-4444-555555555555',  -- client's Entra tenant GUID
   TRUE
 );
@@ -264,7 +278,7 @@ link, have them consent on behalf of the organisation, then users sign in
 normally. Publisher verification would lift this friction and is a candidate
 onboarding improvement.
 
-Never set `entra_object_id` by hand — it binds automatically on first login.
+Never set `subject_identifier` by hand — it binds automatically on first login.
 Deactivate a user with `is_active = FALSE` (kills live sessions on their next
 request). `db:verify` enforces the structural invariants after any change.
 
@@ -274,7 +288,7 @@ Entra account (new `oid`, same email), their next login denies with
 after verifying the request **out-of-band** with the client's IT contact:
 
 ```sql
-UPDATE portal_users SET entra_object_id = NULL, updated_at = now()
+UPDATE portal_users SET subject_identifier = NULL, updated_at = now()
  WHERE email = 'jane.doe@pnp.example';
 UPDATE portal_sessions SET revoked_at = now()
  WHERE user_id = (SELECT id FROM portal_users WHERE email = 'jane.doe@pnp.example')

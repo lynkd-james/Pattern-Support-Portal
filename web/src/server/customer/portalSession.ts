@@ -1,5 +1,8 @@
 // =============================================================================
-// EntraIDSessionProvider (Stage 8a) — the real SessionProvider.
+// PortalSessionProvider — the real SessionProvider (renamed from
+// EntraIDSessionProvider in Stage 8b: it resolves cookie -> session -> scope
+// and is identity-provider-independent; the provider only matters at LOGIN
+// time, in the auth routes).
 //
 // Resolves the request's session cookie to a portal user via the DB-backed
 // session store, then derives RequestScope from portal_users /
@@ -22,7 +25,7 @@ interface BuRow {
   name: string;
 }
 
-export class EntraIDSessionProvider implements SessionProvider {
+export class PortalSessionProvider implements SessionProvider {
   private async requireSession(): Promise<ResolvedSession> {
     const rawToken = cookies().get(SESSION_COOKIE_NAME)?.value;
     if (!rawToken) throw new UnauthenticatedError();

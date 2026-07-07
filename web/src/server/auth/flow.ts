@@ -1,21 +1,48 @@
 // =============================================================================
-// Sign-in flow cookie (server-only, Stage 8a).
+// Sign-in flow cookie + per-flow secrets (server-only; provider-agnostic).
 //
-// Holds the per-flow secrets (CSRF state, ID-token nonce, PKCE verifier)
-// between /api/auth/login and /api/auth/callback in a short-lived httpOnly
-// cookie. SameSite=Lax + response_mode=query means the browser sends it on the
-// top-level GET redirect back from Entra. The cookie is deleted the moment the
-// callback reads it (single use).
+// Holds the per-flow secrets (CSRF state, ID-token nonce, PKCE verifier, and
+// the PROVIDER the flow was started for) between a login route and its
+// callback in a short-lived httpOnly cookie. SameSite=Lax + response_mode=query
+// means the browser sends it on the top-level GET redirect back from the
+// provider. The cookie is deleted the moment the callback reads it (single
+// use), and each callback verifies the cookie's provider matches its own route
+// (defence against cross-flow replay).
 // =============================================================================
 
 if (typeof window !== "undefined") {
   throw new Error("auth/flow.ts is server-only.");
 }
 
+import { createHash, randomBytes } from "node:crypto";
 import { env } from "../env";
-import type { FlowSecrets } from "./msal";
+import type { IdentityProviderId } from "./identity";
 
 export const FLOW_COOKIE_MAX_AGE_S = 600; // 10 minutes to complete sign-in
+
+export interface FlowSecrets {
+  provider: IdentityProviderId;
+  state: string;
+  nonce: string;
+  codeVerifier: string;
+}
+
+const PROVIDER_IDS: ReadonlySet<string> = new Set(["entra", "google"]);
+
+/** Fresh per-flow secrets: CSRF state, ID-token nonce, PKCE verifier+challenge (S256). */
+export function newFlowSecrets(
+  provider: IdentityProviderId
+): FlowSecrets & { codeChallenge: string } {
+  const codeVerifier = randomBytes(32).toString("base64url");
+  const codeChallenge = createHash("sha256").update(codeVerifier).digest("base64url");
+  return {
+    provider,
+    state: randomBytes(16).toString("base64url"),
+    nonce: randomBytes(16).toString("base64url"),
+    codeVerifier,
+    codeChallenge,
+  };
+}
 
 /** Secure flag: only relaxed for an explicit http://localhost dev base URL. */
 export function cookiesSecure(): boolean {
@@ -34,13 +61,20 @@ export function parseFlowSecrets(cookieValue: string): FlowSecrets | null {
     if (parsed === null || typeof parsed !== "object") return null;
     const p = parsed as Record<string, unknown>;
     if (
+      typeof p.provider !== "string" ||
+      !PROVIDER_IDS.has(p.provider) ||
       typeof p.state !== "string" ||
       typeof p.nonce !== "string" ||
       typeof p.codeVerifier !== "string"
     ) {
       return null;
     }
-    return { state: p.state, nonce: p.nonce, codeVerifier: p.codeVerifier };
+    return {
+      provider: p.provider as IdentityProviderId,
+      state: p.state,
+      nonce: p.nonce,
+      codeVerifier: p.codeVerifier,
+    };
   } catch {
     return null;
   }

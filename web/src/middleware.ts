@@ -12,7 +12,16 @@ import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_COOKIE_NAME } from "@/lib/authCookies";
 
 export function middleware(req: NextRequest) {
-  if ((process.env.AUTH_PROVIDER ?? "").trim() !== "entra") {
+  // Active only when real auth is enabled (edge runtime: read env directly;
+  // legacy AUTH_PROVIDER honoured until Stage 8d). Placeholder/no-auth => pass.
+  const raw = (
+    process.env.AUTH_ENABLED_PROVIDERS ??
+    process.env.AUTH_PROVIDER ??
+    ""
+  )
+    .trim()
+    .toLowerCase();
+  if (!raw || raw.includes("placeholder")) {
     return NextResponse.next();
   }
   if (!req.cookies.has(SESSION_COOKIE_NAME)) {

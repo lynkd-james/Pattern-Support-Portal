@@ -1,33 +1,31 @@
 // =============================================================================
-// MSAL confidential-client wrapper (server-only, Stage 8a).
+// MSAL confidential-client wrapper (server-only; Entra adapter plumbing).
 //
 // Authorization-code flow + PKCE against the multi-tenant `organizations`
 // authority. The ID token's trust anchor is the authenticated BACK-CHANNEL TLS
 // exchange with the token endpoint during acquireTokenByCode (the token is
 // received from Microsoft directly, never from the browser) — not local
-// signature validation. Nonce / tid / oid / iss-consistency checks live in
-// identity.ts (pure) and run in the callback. response_mode=query keeps the
+// signature validation. Claim normalisation lives in entraClaims.ts (pure);
+// this module is protocol mechanics only. response_mode=query keeps the
 // round-trip a top-level GET so SameSite=Lax cookies are sent on the redirect
 // back. Entra tokens are used at login only and never stored.
 // =============================================================================
 
 if (typeof window !== "undefined") {
-  throw new Error("auth/msal.ts is server-only.");
+  throw new Error("auth/providers/msal.ts is server-only.");
 }
 
 import {
   ConfidentialClientApplication,
-  CryptoProvider,
   ResponseMode,
   type AuthenticationResult,
 } from "@azure/msal-node";
-import { requirePortalAuth } from "../env";
+import { requirePortalAuth } from "../../env";
 
 export const REDIRECT_PATH = "/api/auth/callback";
 const SCOPES = ["openid", "profile", "email"];
 
 let cca: ConfidentialClientApplication | null = null;
-const cryptoProvider = new CryptoProvider();
 
 function getApp(): { app: ConfidentialClientApplication; redirectUri: string } {
   const cfg = requirePortalAuth();
@@ -41,23 +39,6 @@ function getApp(): { app: ConfidentialClientApplication; redirectUri: string } {
     });
   }
   return { app: cca, redirectUri: `${cfg.baseUrl}${REDIRECT_PATH}` };
-}
-
-export interface FlowSecrets {
-  state: string;
-  nonce: string;
-  codeVerifier: string;
-}
-
-/** Fresh per-flow secrets: CSRF state, ID-token nonce, PKCE verifier. */
-export async function newFlowSecrets(): Promise<FlowSecrets & { codeChallenge: string }> {
-  const { verifier, challenge } = await cryptoProvider.generatePkceCodes();
-  return {
-    state: cryptoProvider.createNewGuid(),
-    nonce: cryptoProvider.createNewGuid(),
-    codeVerifier: verifier,
-    codeChallenge: challenge,
-  };
 }
 
 /** Authorization URL for the sign-in redirect. */
@@ -78,7 +59,7 @@ export function buildAuthCodeUrl(params: {
   });
 }
 
-/** Exchange the authorization code; msal validates the ID token here. */
+/** Exchange the authorization code over the back-channel (the trust anchor). */
 export function redeemAuthCode(params: {
   code: string;
   codeVerifier: string;
