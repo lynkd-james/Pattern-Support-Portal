@@ -262,6 +262,35 @@ SELECT u.id, b.id
    AND b.account_id = u.account_id AND b.slug = 'PnP';
 ```
 
+**Google Workspace provisioning (Stage 8c — current validated guidance).**
+For the validated single-domain Workspace, `issuer_namespace` is the Workspace
+domain (`411agency.com`), matching both the **observed** `hd` claim
+(real-token validation, 2026-07-07) and the user's email domain — consistent
+with Google's documented semantics ("the domain associated with the Google
+Workspace or Cloud organization"). For Workspaces with **secondary domains or
+domain aliases**, the correct provisioning value **should be verified against
+an observed `hd` claim during onboarding** (login-domain vs primary-domain
+semantics coincide in the validated case and remain unverified for
+multi-domain tenants). An incorrect value fails **closed** as
+`NAMESPACE_MISMATCH` and is visible in the audit logs. Values are lowercased.
+Consumer Gmail accounts carry no `hd` claim and are denied
+(`MISSING_NAMESPACE`).
+
+```sql
+-- Google Workspace user (account-wide):
+INSERT INTO portal_users (account_id, email, display_name, account_wide,
+                          identity_provider, issuer_namespace, is_active)
+VALUES (
+  (SELECT id FROM accounts WHERE slug = 'pnp'),
+  'jane.doe@client-workspace.com',
+  'Jane Doe',
+  TRUE,
+  'google',
+  'client-workspace.com',   -- Workspace domain = domain of the work email, lowercase
+  TRUE
+);
+```
+
 **Consent-screen note for client IT admins:** the Microsoft consent prompt
 shows *"Maintain access to data you have given it access to"* — that is the
 `offline_access` scope msal-node requests by default; the portal never

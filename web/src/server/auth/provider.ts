@@ -19,6 +19,7 @@ import type {
   IdentityProviderId,
 } from "./identity";
 import { entraAdapter } from "./providers/entra";
+import { googleAdapter } from "./providers/google";
 
 export interface IdentityProviderAdapter {
   readonly provider: IdentityProviderId;
@@ -40,10 +41,9 @@ export interface IdentityProviderAdapter {
   ): AuthenticatedIdentity | IdentityDeny;
 }
 
-/** Registry. Google arrives in Stage 8c; requesting it now is a config error. */
+/** Registry — one entry per supported provider. */
 export function getAdapter(provider: IdentityProviderId): IdentityProviderAdapter {
   if (provider === "entra") return entraAdapter;
-  throw new Error(
-    `Identity provider "${provider}" is not implemented yet (arrives in Stage 8c).`
-  );
+  if (provider === "google") return googleAdapter;
+  throw new Error(`Identity provider "${provider}" is not implemented.`);
 }

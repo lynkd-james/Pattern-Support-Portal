@@ -1,8 +1,8 @@
 # Provider-Agnostic Identity Model + Google Workspace Authentication (design)
 
 Status: DESIGN APPROVED (final refinement pass incorporated 2026-07-08).
-**Stage 8b (provider-agnostic model, Entra-only) IMPLEMENTED** — pending
-review/commit. Stage 8c (Google) not started.
+**Stage 8b (provider-agnostic model) SHIPPED (`d99dce5`). Stage 8c (Google
+Workspace) IMPLEMENTED and real-token validated** — pending review/commit.
 Builds on the approved Stage 8a design (`docs/auth.md`); nothing here weakens a
 Stage 8a security guarantee. Approved design decisions (2026-07-08):
 
@@ -377,9 +377,12 @@ final-diff review (no instrumentation), per the 8a release checklist.
 
 ## 9. Assumptions to verify during implementation
 
-- `hd` semantics on **multi-domain Workspaces** (primary domain vs user's email
-  domain) — determines the exact value admins capture at provisioning. Verify
-  with a real multi-domain account if available; else document the constraint.
+- `hd` semantics — **PARTIALLY RESOLVED by observation (Stage 8c, 2026-07-07)**:
+  on a real single-domain Workspace token, `hd` equalled the login-email domain
+  (= the primary domain). Provisioning rule: capture the domain of the user's
+  work email, lowercased (see docs/auth.md). **Multi-domain Workspaces remain
+  unverified** — confirm with one real login when the first multi-domain
+  Google client onboards (wrong guess fails closed as `NAMESPACE_MISMATCH`).
 - Google OAuth consent for an **unverified external app** on non-sensitive
   scopes (`openid email profile`) is a warning, not an admin-consent-style
   block. Onboarding-doc item either way.
@@ -399,3 +402,19 @@ provider discovery on /login; prior-session revocation on new login; automated
 schema-parity check; Entra tenant allow-listing; the Stage 8a `NO_EMAIL_CLAIM`
 real-token residual (unchanged); scheduled pipeline + session cleanup (now
 Stage 8d).
+
+### Stage 8d candidates carried from the 8b/8c reviews (recorded 2026-07-08)
+
+- Remove legacy `AUTH_PROVIDER` compatibility alias.
+- Split `auth/handlers.ts` into smaller services **if** another authentication
+  provider or flow is added.
+- Strengthen the bound-path provider assertion (defence in depth beyond the
+  structural SQL key).
+- Verify `hd` behaviour with a real multi-domain Workspace customer.
+- Validate the runtime `MISSING_NAMESPACE` path using an External OAuth client
+  when appropriate (the current Internal client is rejected by Google as
+  `org_internal` before our callback is ever invoked).
+- Review the Internal vs External Google OAuth strategy for multi-tenant
+  customer onboarding (Internal pre-filters foreign identities but binds the
+  client to one Workspace; External reintroduces the unverified-app consent
+  screen).

@@ -1,7 +1,6 @@
 // =============================================================================
-// GET /api/auth/login — start the Microsoft Entra sign-in flow.
-// Thin route: the provider-independent flow lives in auth/handlers.ts
-// (Stage 8c extraction; behaviour byte-for-byte the Stage 8a/8b Entra flow).
+// GET /api/auth/google/login — start the Google Workspace sign-in flow.
+// Thin route over the provider-independent handler factory (auth/handlers.ts).
 // =============================================================================
 
 import { makeLoginHandler } from "@/server/auth/handlers";
@@ -9,4 +8,4 @@ import { makeLoginHandler } from "@/server/auth/handlers";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export const GET = makeLoginHandler("entra");
+export const GET = makeLoginHandler("google");

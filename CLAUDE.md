@@ -174,10 +174,11 @@ Committed on `main`:
 - **Stage 8a** — Microsoft Entra ID authentication: multi-tenant + tenant pinning, DB-backed sessions, ordered migrations, legacy probe-route removal, sanitised API error envelopes (see `docs/auth.md`) ✓
 - **Stage 8b** — Provider-agnostic identity model (`identity_provider` / `issuer_namespace` / `subject_identifier`; adapters + central policy layer; behaviour-preserving Entra refactor — see `docs/identity-providers.md`) ✓
 
+- **Stage 8c** — Google Workspace authentication: `providers/google.ts` (jose: discovery/PKCE/JWKS), parallel `/api/auth/google/*` routes via extracted handler factories, two-button login, `hd` namespace pinning (real-token validated), `email_verified` require-true policy ✓
+
 Next:
 
-- **Stage 8c** — Google Workspace authentication (`providers/google.ts` via openid-client, parallel `/api/auth/google/*` routes, two-button login, `hd` namespace pinning, `email_verified` require-true policy).
-- **Stage 8d** — Scheduled ~15-min pipeline: advisory-lock orchestrator, `CRON_SECRET`-guarded jobs route runnable **one step per invocation**, expired-session cleanup, legacy `AUTH_PROVIDER` alias removal. Hosting decision pends a worst-case duration measurement (Vercel Cron if it fits with headroom, else recommend Azure-hosted).
+- **Stage 8d** — Scheduled ~15-min pipeline: advisory-lock orchestrator, `CRON_SECRET`-guarded jobs route runnable **one step per invocation**, expired-session cleanup. Plus auth carry-overs (see docs/identity-providers.md §10): legacy `AUTH_PROVIDER` alias removal, bound-path provider assertion, multi-domain `hd` verification, runtime `MISSING_NAMESPACE` validation, Internal-vs-External Google OAuth strategy. Hosting decision pends a worst-case duration measurement (Vercel Cron if it fits with headroom, else recommend Azure-hosted).
 - Later phases: SLA analytics & reporting; admin & scaling features.
 - **Account grouping (known future requirement):** SG / LAR / CUMi umbrella views (a group contact seeing all their brands' tickets). The current one-account-per-code model does not support it. Likely shape: nullable `account_group_id` + group-scoped portal users. Do not build preemptively.
 - **Non-Microsoft client identity:** if a client without an Entra tenant appears, add a second `SessionProvider` (Entra External ID preferred; magic-link revival for no-IdP clients). Do not adopt an identity broker preemptively.

@@ -92,11 +92,6 @@ function resolveEnabledProviders(
           `(got: ${items.join(", ")}).`
       );
     }
-    if (items.includes("google")) {
-      throw new Error(
-        `Auth provider "google" is not implemented yet (arrives in Stage 8c).`
-      );
-    }
     return items as EnabledProvider[];
   };
 
@@ -170,6 +165,10 @@ export const env = {
   authEntraAuthority:
     readString("AUTH_ENTRA_AUTHORITY") ??
     "https://login.microsoftonline.com/organizations",
+  // Google Workspace sign-in (Stage 8c). OAuth 2.0 Web-application client.
+  authGoogleClientId: readString("AUTH_GOOGLE_CLIENT_ID"),
+  authGoogleClientSecret: readString("AUTH_GOOGLE_CLIENT_SECRET"),
+
   // Absolute base URL of the portal (redirect URI base), e.g. https://portal.example.com
   portalBaseUrl: readString("PORTAL_BASE_URL"),
   sessionIdleHours: readInt("SESSION_IDLE_HOURS", 8),
@@ -241,6 +240,24 @@ export function requirePortalAuth(): {
   };
 }
 
+/** Required when 'google' is enabled (Stage 8c portal sign-in). Fail-fast, mirroring requirePortalAuth(). */
+export function requireGoogleAuth(): {
+  clientId: string;
+  clientSecret: string;
+  baseUrl: string;
+} {
+  const missing: string[] = [];
+  if (!env.authGoogleClientId) missing.push("AUTH_GOOGLE_CLIENT_ID");
+  if (!env.authGoogleClientSecret) missing.push("AUTH_GOOGLE_CLIENT_SECRET");
+  if (!env.portalBaseUrl) missing.push("PORTAL_BASE_URL");
+  if (missing.length) throw new MissingEnvError(missing, "portal auth (Google)");
+  return {
+    clientId: env.authGoogleClientId!,
+    clientSecret: env.authGoogleClientSecret!,
+    baseUrl: env.portalBaseUrl!.replace(/\/+$/, ""),
+  };
+}
+
 /**
  * Validate every known variable at once. Useful for a future `env:check` task.
  * `requireIntegrations=false` (default) validates only what Stage 1 needs, so
@@ -274,6 +291,8 @@ export function describeConfig(): Record<string, string> {
     AUTH_ENABLED_PROVIDERS: env.enabledProviders.join(","),
     AUTH_ENTRA_CLIENT_ID: mask(env.authEntraClientId),
     AUTH_ENTRA_CLIENT_SECRET: mask(env.authEntraClientSecret),
+    AUTH_GOOGLE_CLIENT_ID: mask(env.authGoogleClientId),
+    AUTH_GOOGLE_CLIENT_SECRET: mask(env.authGoogleClientSecret),
     PORTAL_BASE_URL: mask(env.portalBaseUrl),
     AUTO_PUBLISH_ENABLED: String(env.autoPublishEnabled),
     PGPOOL_MAX: String(env.pgPoolMax),

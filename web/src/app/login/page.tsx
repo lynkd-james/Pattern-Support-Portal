@@ -1,9 +1,10 @@
 // =============================================================================
-// /login — minimal sign-in screen (Stage 8a).
+// /login — minimal sign-in screen (Stage 8c: two explicit provider buttons —
+// approved temporary UX; email-first provider discovery deferred).
 //
-// One action: start the Entra flow via /api/auth/login. Error markers from the
-// callback are deliberately information-free (?error=auth => generic retry
-// message); identity denials never reach this page (uniform 403 instead).
+// Each button starts its provider's flow. Error markers from the callbacks are
+// deliberately information-free (?error=auth => generic retry message);
+// identity denials never reach this page (uniform 403 instead).
 // =============================================================================
 
 const FONT_STACK =
@@ -32,7 +33,7 @@ export default function LoginPage({
           Support Portal
         </h1>
         <p className="mt-2 text-sm text-[#9C8E78]">
-          Sign in with your organisation&apos;s Microsoft account.
+          Sign in with your organisation&apos;s work account.
         </p>
 
         {failed && (
@@ -46,6 +47,12 @@ export default function LoginPage({
           className="mt-8 inline-block w-full rounded-md border border-[#3A2D1F] bg-[#221A11] px-4 py-2.5 text-sm text-[#F7F2E8] transition-colors hover:bg-[#2C2216]"
         >
           Sign in with Microsoft
+        </a>
+        <a
+          href="/api/auth/google/login"
+          className="mt-3 inline-block w-full rounded-md border border-[#3A2D1F] bg-[#221A11] px-4 py-2.5 text-sm text-[#F7F2E8] transition-colors hover:bg-[#2C2216]"
+        >
+          Sign in with Google
         </a>
       </div>
     </div>
