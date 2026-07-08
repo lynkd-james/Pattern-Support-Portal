@@ -8,6 +8,57 @@ the portal reads. (Stage 3.)
 
 - **The customer layer is derived, never canonical.** It can always be rebuilt
   from the internal layer; no customer-facing row is a source of truth.
+- **Customer projection rows are cached derived state, not historical
+  records. Historical evidence belongs exclusively in the append-only audit
+  log** (`audit_events`). Consequently a projection row whose visibility scope
+  disappears (Stage 9a: its business unit de-listed from the ticket) is
+  **hard-deleted**, not retained as a tombstone — the withdrawal is already
+  recorded in the audit log. Precedent for future work: if you want history,
+  it goes in `audit_events`, never in stale projection rows.
+- **The projection is a PURE FUNCTION of the internal model** (formalised
+  Stage 9a design review):
+
+  ```
+  customer_tickets = Projection(internal_tickets,
+                                internal_ticket_business_units,
+                                visibility_state, ...)
+  ```
+
+  and never `previous customer_tickets + incremental edits`. Incremental
+  UPSERTs exist purely as a performance strategy — the implementation must
+  always behave **as if it recomputed the projection from scratch**. The
+  correctness criterion, stated as an invariant:
+
+  > **Any row that would not exist in a full rebuild must not exist after an
+  > incremental update.** Incremental and rebuild are two execution paths of
+  > one deterministic function and must produce the same observable result
+  > ("incremental == rebuild" equivalence).
+
+  This is what makes "only add new rows — we don't need to check removals" a
+  detectable bug rather than a plausible optimisation: dropping withdrawal
+  handling breaks the properties below (and, cross-checked at the DB layer, the
+  projection-subset invariant in `db:verify`).
+
+  Two distinct guarantees make this precise (Stage 9a; a single "incremental ==
+  rebuild" statement over-reached — a tombstone is *retained history*, not a
+  function of current state):
+
+  1. **Projection determinism.** Given the same internal state and visibility
+     model, projection is a deterministic pure function: an incremental
+     projection and a from-scratch (truncate-)rebuild produce identical
+     customer-visible / current derived state. Retained historical artifacts
+     (hidden tombstones) are explicitly outside this property — a truncate-
+     rebuild deliberately discards history and must not attempt to reconstruct
+     what current source state no longer implies.
+  2. **Projection preservation.** Where a row exists and its visibility scope
+     still exists, incremental projection preserves stable row identity and
+     lifecycle state unless the current source state requires a change
+     (surgical updates, never delete-and-recreate).
+
+  A tombstone belongs to the projection *lifecycle* (existing rows + current
+  result → reconciliation), not the projection *function* (internal state →
+  result). Determinism validates the function; preservation validates the
+  lifecycle.
 - **Deterministic & idempotent.** Re-running produces the same result; safe to
   run repeatedly.
 - **No internal data leaks.** Only explicitly approved, customer-safe fields are

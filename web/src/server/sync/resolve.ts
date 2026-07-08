@@ -12,16 +12,20 @@ import type { ClickUpCustomField, ClickUpTask } from "../clickup/types";
 
 export type Priority = "P1" | "P2" | "P3";
 
+// Stage 9a (docs/shared-tickets.md): MULTIPLE_BUSINESS_UNITS removed — a
+// multi-label ticket is a legitimate SHARED ticket, not an anomaly. The
+// TENANCY_CHANGED persistence-time reason is likewise gone: the visibility
+// set is now derived data reconciled on every sync (a changed label set is an
+// update, with origin transitions audited), so no tenancy conflict remains.
+// BU_UNDETERMINED (zero matches) is retained — never-guess survives.
 export type QuarantineReason =
   | "NO_CUSTOM_ID"
   | "MISSING_CREATED_TIMESTAMP"
   | "BU_UNDETERMINED"
-  | "MULTIPLE_BUSINESS_UNITS"
   | "SLA_PRIORITY_MISSING"
   | "SLA_PRIORITY_MULTIPLE"
   | "SLA_PRIORITY_UNSUPPORTED"
-  | "STATUS_UNMAPPED"
-  | "TENANCY_CHANGED"; // detected at persistence time, not during resolution
+  | "STATUS_UNMAPPED";
 
 export interface ResolvedTicket {
   clickupTaskId: string;
@@ -31,8 +35,17 @@ export interface ResolvedTicket {
   rawStatus: string;
   currentStage: string; // portal_stage value
   priority: Priority;
-  accountId: string;
-  businessUnitId: string;
+  /**
+   * VISIBILITY set (>= 1 member; sorted by business-unit id for deterministic
+   * hashing). The sole source of which business units may see the ticket.
+   */
+  businessUnits: BusinessUnitRef[];
+  /**
+   * ORIGIN — populated only when objectively real (exactly one member in the
+   * visibility set), else null. Internal reporting data; never visibility.
+   */
+  originAccountId: string | null;
+  originBusinessUnitId: string | null;
   createdAt: Date;
   dateUpdated: Date;
   contentHash: string;
@@ -108,7 +121,9 @@ export function resolveTicket(
   const updatedMs = Number(task.date_updated);
   const dateUpdated = new Date(Number.isFinite(updatedMs) ? updatedMs : createdMs);
 
-  // 3. Business unit from the Customer label(s).
+  // 3. VISIBILITY set from the Customer label(s) — Stage 9a: multiple labels
+  // are a legitimate shared ticket (the label set IS the sharing decision);
+  // only ZERO matches quarantines (never guess).
   const customerLabels = labelValues(task, ctx.customerFieldName);
   const matched = new Map<string, BusinessUnitRef>();
   for (const label of customerLabels) {
@@ -121,13 +136,10 @@ export function resolveTicket(
       `no mapped business unit for Customer labels [${customerLabels.join(", ") || "none"}]`
     );
   }
-  if (matched.size > 1) {
-    return quarantine(
-      "MULTIPLE_BUSINESS_UNITS",
-      `multiple business units for Customer labels [${customerLabels.join(", ")}]`
-    );
-  }
-  const bu = [...matched.values()][0];
+  // Deterministic ordering (by BU id) for stable content hashing.
+  const businessUnits = [...matched.values()].sort((a, b) => a.id.localeCompare(b.id));
+  // ORIGIN is only real when the set has exactly one member (docs/shared-tickets.md §2).
+  const origin = businessUnits.length === 1 ? businessUnits[0] : null;
 
   // 4. Priority from the SLA Priority label (P1–P3; P4 unsupported).
   const priorityLabels = [
@@ -168,8 +180,9 @@ export function resolveTicket(
     rawStatus,
     mapped.stage,
     priority,
-    bu.accountId,
-    bu.id,
+    // The sorted visibility set: any membership change changes the hash, so
+    // the sync's no-op skip can never miss a junction reconciliation.
+    ...businessUnits.map((b) => `${b.accountId}/${b.id}`),
   ]);
 
   return {
@@ -182,8 +195,9 @@ export function resolveTicket(
       rawStatus,
       currentStage: mapped.stage,
       priority,
-      accountId: bu.accountId,
-      businessUnitId: bu.id,
+      businessUnits,
+      originAccountId: origin?.accountId ?? null,
+      originBusinessUnitId: origin?.id ?? null,
       createdAt: new Date(createdMs),
       dateUpdated,
       contentHash,

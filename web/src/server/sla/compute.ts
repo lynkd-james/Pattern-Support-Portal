@@ -46,8 +46,10 @@ interface PolicyRow {
 
 interface TicketRow {
   id: string;
-  account_id: string;
-  business_unit_id: string;
+  /** ORIGIN (Stage 9a): NULL for shared (multi-BU) tickets — such tickets can
+   *  only ever match GLOBAL policies (structural per docs/shared-tickets.md §2). */
+  account_id: string | null;
+  business_unit_id: string | null;
   priority: string;
   created_at: Date;
   acknowledged_at: Date | null;
@@ -99,11 +101,15 @@ async function loadPolicies(): Promise<PolicyRow[]> {
   return res.rows;
 }
 
-/** Most-specific applicable policy: business_unit > account > global; priority must match. */
+/**
+ * Most-specific applicable policy: business_unit > account > global; priority
+ * must match. NULL origin (shared ticket) matches only global policies — the
+ * scoped-policy skip conditions below are never satisfiable against NULL.
+ */
 function resolvePolicy(
   policies: PolicyRow[],
-  accountId: string,
-  businessUnitId: string,
+  accountId: string | null,
+  businessUnitId: string | null,
   priority: string
 ): PolicyRow | null {
   let best: PolicyRow | null = null;

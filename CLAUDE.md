@@ -100,9 +100,9 @@ These are hard rules. Do not violate them without an explicit, reviewed decision
 6. All server config/secrets live in `src/server/**` behind a `typeof window !== "undefined"` guard. Never import `server/*` into client code. Never log secrets (`logger.ts` emits structured JSON only).
 
 **Data integrity**
-7. **Never guess. Quarantine instead.** Ambiguous tenancy or classification (missing custom id, undetermined/multiple business units, missing/unsupported SLA priority, unmapped status, changed tenancy) → the ticket is quarantined, not fabricated. See `sync/resolve.ts` `QuarantineReason`.
+7. **Never guess. Quarantine instead.** Genuinely ambiguous classification (missing custom id, **no** mapped business unit, missing/unsupported/multiple SLA priority, unmapped status) → the ticket is quarantined, not fabricated. See `sync/resolve.ts` `QuarantineReason`. **NOTE (Stage 9a):** *multiple* business units is **no longer** a quarantine — it is a legitimate shared ticket (see §7 tenancy + `docs/shared-tickets.md`); only **zero** matches quarantine (`BU_UNDETERMINED`).
 8. **Config is data-driven, never hardcoded.** Status mappings live in `status_mappings`; SLA targets live in `sla_policies`. Engines read them — they must not embed business values. The SLA engine is **request-type agnostic**: it consumes only the resolved policy (e.g. A&R requests are handled as standard P2 purely via their priority label, with zero special-casing in the engine).
-9. Syncs are **incremental + idempotent**, driven by a watermark in `sync_runs` (one `source_system` per subsystem: `clickup`, `outlook`, `transform`, `sla`). Upserts are keyed by `clickup_task_id`; first-write-wins on milestones.
+9. Syncs are **incremental + idempotent**, driven by a watermark in `sync_runs` (one `source_system` per subsystem: `clickup`, `outlook`, `transform`, `sla`, `sessions`). Upserts are keyed by `clickup_task_id`; first-write-wins on milestones.
 10. Engines **write only on actual change** to avoid churning the projection's `updated_at` watermark.
 11. Core logic modules are **pure and deterministic** (no DB/network): `sync/resolve.ts`, `projection/visibility.ts`, `sla/calendar.ts`, `sla/sla.ts`. Keep them that way so they stay unit-testable.
 12. `internal_ticket_events` is **immutable/append-only** and never written by the projection (customer-visibility is *computed*, not stored on the event).
@@ -131,6 +131,10 @@ npm run sessions:cleanup  # delete sessions invalid for > 7 days
 
 # App
 npm run dev | build | start | lint
+
+# Tests (Stage 9a; permanent regression suite, Vitest)
+npm test                  # unit tier — pure, no DB, seconds (tests/unit/**)
+npm run test:integration  # workflow tier — isolated scratch DB (tests/integration/**)
 ```
 
 **Staged, review-first delivery.** Work proceeds one stage at a time; **each stage is a single cohesive commit**. Design first → verify dependencies → implement cleanly → typecheck (`tsc --noEmit`) → validate → commit. Commit message convention: `Stage N: <summary>` (see `git log`).
@@ -145,7 +149,9 @@ npm run dev | build | start | lint
 
 **Tenancy:** `accounts` → `business_units`. Current model: **each ClickUp `Customer` code is its own independent client = one account + one business unit**, where `business_units.slug` = the ClickUp `Customer` code (the sync's attribution key). `status_mappings` and `sla_policies` are **global** (`account_id`/`business_unit_id` NULL). The legacy single `pepkor` account is retired via `is_active = FALSE` (non-destructive). The runtime resolves business units live — onboard a new client with a seed row / admin INSERT, not by editing engine code. `db:verify` uses **structural invariants** (e.g. "every active account has ≥1 active BU", "no duplicate active slug"), **not fixed client counts**.
 
-**Core tables:** `internal_tickets`, `internal_ticket_events`, `customer_tickets`, `customer_ticket_timeline`, `status_mappings`, `sla_calendars`, `sla_calendar_holidays`, `sla_policies`, `portal_users`, `portal_user_business_units`, `magic_link_tokens`, `portal_sessions`, `audit_events`, `sync_runs`.
+**Shared tickets (Stage 9a, `docs/shared-tickets.md`).** A ticket may be visible to **multiple business units across different accounts** (a fix affecting Ayana *and* Refinery). Visibility is a set: `internal_ticket_business_units` (junction) is the **sole source of which BUs — and thus accounts — may see a ticket**. One canonical `internal_tickets` row; the projection **fans out one `customer_tickets` row per visible BU**, so per-account isolation (invariant #2) is unchanged — each viewer reads only their own scoped row. `internal_tickets.account_id`/`business_unit_id` are **ORIGIN** (reporting only, never visibility): populated iff the visibility set has exactly one member, else **NULL** (no fabricated origin; a NULL-origin ticket structurally matches only global SLA policies). Terminology: **tickets** = canonical internal records; **exposure** = customer-visible projections. Projection lifecycle: a row exists only while its visibility scope exists — de-listed BU ⇒ row **hard-deleted** (history lives in `audit_events`); unpublished ⇒ hidden tombstone. Two projection guarantees: **determinism** (published/current surface is a pure function of internal state) and **preservation** (surviving rows keep stable identity). Four executable `db:verify` invariants encode the model.
+
+**Core tables:** `internal_tickets`, `internal_ticket_business_units`, `internal_ticket_events`, `customer_tickets`, `customer_ticket_timeline`, `status_mappings`, `sla_calendars`, `sla_calendar_holidays`, `sla_policies`, `portal_users`, `portal_user_business_units`, `magic_link_tokens`, `portal_sessions`, `audit_events`, `sync_runs`.
 
 **SLA model (Stage 7).** Business-hours only, Mon–Fri 08:00–17:00 **Africa/Johannesburg** (UTC+2, no DST). Response = `created_at → acknowledged_at`; Resolution = `created_at → closed_at`. No pause behaviour. Seeded global targets: **P1 2h/24h, P2 8h/48h, P3 24h/120h** (business hours), **at-risk threshold 80%**. States: milestone reached → `MET`/`BREACHED`; else `BREACHED` if past due, `AT_RISK` past the threshold, else `PENDING`; no matching policy → `NOT_APPLICABLE`. Values live in `sla_policies` only.
 
@@ -182,12 +188,13 @@ Committed on `main`:
 - **Stage 8c** — Google Workspace authentication: `providers/google.ts` (jose: discovery/PKCE/JWKS), parallel `/api/auth/google/*` routes via extracted handler factories, two-button login, `hd` namespace pinning (real-token validated), `email_verified` require-true policy ✓
 
 - **Stage 8d** — Scheduled pipeline: advisory-lock orchestrator (`jobs/pipeline.ts`), `CRON_SECRET`-guarded `/api/jobs/{step}` (one step per invocation, staggered 15-min crons in `vercel.json`), bounded Outlook backfill (real-mailbox validated: 6,539 msgs / 7 invocations), expired-session cleanup, ops runbook `docs/operations.md` with measured baselines. Hosting decision: **Vercel Cron confirmed** (worst observed step 31 s vs 300 s budget) ✓
+- **Stage 9a** — Shared tickets across customer accounts: `internal_ticket_business_units` junction as sole visibility source, projection fan-out per BU, honest-NULL origin, `MULTIPLE_BUSINESS_UNITS` quarantine removed, four executable `db:verify` invariants, permanent Vitest regression suite (unit + scratch-DB integration) — see `docs/shared-tickets.md` ✓
 
 Next:
 
 - **Auth carry-overs** (see docs/identity-providers.md §10): legacy `AUTH_PROVIDER` alias removal, bound-path provider assertion, multi-domain `hd` verification, runtime `MISSING_NAMESPACE` validation, Internal-vs-External Google OAuth strategy.
 - Later phases: SLA analytics & reporting; admin & scaling features.
-- **Account grouping (known future requirement):** SG / LAR / CUMi umbrella views (a group contact seeing all their brands' tickets). The current one-account-per-code model does not support it. Likely shape: nullable `account_group_id` + group-scoped portal users. Do not build preemptively.
+- **Account grouping (known future requirement):** SG / LAR / CUMi umbrella views (a group contact seeing all their brands' tickets). The current one-account-per-code model does not support it. Likely shape: nullable `account_group_id` + group-scoped portal users. Do not build preemptively. **When built, revisit `customer_tickets_account_number_key` UNIQUE(account_id, ticket_number)** — it would collide if one account ever holds two BUs both sharing a ticket (harmless today: one BU per account).
 - **Non-Microsoft client identity:** if a client without an Entra tenant appears, add a second `SessionProvider` (Entra External ID preferred; magic-link revival for no-IdP clients). Do not adopt an identity broker preemptively.
 
 ---

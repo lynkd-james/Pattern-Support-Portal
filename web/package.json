@@ -7,6 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "test": "vitest run --config vitest.config.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "db:migrate": "tsx scripts/db/migrate.ts",
     "db:seed": "tsx scripts/db/seed.ts",
     "db:verify": "tsx scripts/db/verify.ts",
@@ -37,6 +39,7 @@
     "postcss": "8.4.39",
     "tailwindcss": "3.4.6",
     "tsx": "4.16.2",
-    "typescript": "5.4.5"
+    "typescript": "5.4.5",
+    "vitest": "^2.1.9"
   }
 }

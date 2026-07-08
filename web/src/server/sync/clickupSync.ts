@@ -29,7 +29,7 @@ import {
 const PAGE_SIZE = 100;
 const MAX_PAGES = 500; // safety bound
 
-type Outcome = "inserted" | "updated" | "skipped" | "tenancy_conflict";
+type Outcome = "inserted" | "updated" | "skipped";
 
 export interface SyncSummary {
   runId: number | null;
@@ -146,7 +146,31 @@ async function closeRun(
 interface UpsertResult {
   ticketId: string;
   outcome: Outcome;
-  detail?: string;
+}
+
+/**
+ * Reconcile the VISIBILITY junction to the resolved set (Stage 9a): add new
+ * members, remove de-listed ones. The projection's per-BU withdraw picks up
+ * removals on the next run (the content hash covers the set, so the ticket's
+ * updated_at bump is guaranteed whenever membership changed).
+ */
+async function reconcileVisibility(
+  client: PoolClient,
+  ticketId: string,
+  t: ResolvedTicket
+): Promise<void> {
+  const ids = t.businessUnits.map((b) => b.id);
+  await client.query(
+    `DELETE FROM internal_ticket_business_units
+      WHERE internal_ticket_id = $1 AND business_unit_id <> ALL($2::uuid[])`,
+    [ticketId, ids]
+  );
+  await client.query(
+    `INSERT INTO internal_ticket_business_units (internal_ticket_id, business_unit_id)
+     SELECT $1, unnest($2::uuid[])
+     ON CONFLICT (internal_ticket_id, business_unit_id) DO NOTHING`,
+    [ticketId, ids]
+  );
 }
 
 async function upsertTicket(
@@ -156,8 +180,8 @@ async function upsertTicket(
   const existing = await client.query<{
     id: string;
     content_hash: string | null;
-    account_id: string;
-    business_unit_id: string;
+    account_id: string | null;
+    business_unit_id: string | null;
   }>(
     `SELECT id, content_hash, account_id, business_unit_id
        FROM internal_tickets WHERE clickup_task_id = $1`,
@@ -173,8 +197,8 @@ async function upsertTicket(
        VALUES ($1,$2,$3,$4,$5,$6,$7::priority_level,$8::portal_stage,$9,$10,$11, now())
        RETURNING id`,
       [
-        t.accountId,
-        t.businessUnitId,
+        t.originAccountId,
+        t.originBusinessUnitId,
         t.ticketNumber,
         t.clickupTaskId,
         t.title,
@@ -186,33 +210,29 @@ async function upsertTicket(
         t.contentHash,
       ]
     );
+    await reconcileVisibility(client, ins.rows[0].id, t);
     return { ticketId: ins.rows[0].id, outcome: "inserted" };
   }
 
   const row = existing.rows[0];
 
-  // Tenancy must never change silently. If the resolved tenant differs from the
-  // stored one, do NOT write — quarantine the ticket for human resolution, so it
-  // is neither moved across tenants nor permanently frozen with stale data.
-  if (row.business_unit_id !== t.businessUnitId || row.account_id !== t.accountId) {
-    return {
-      ticketId: row.id,
-      outcome: "tenancy_conflict",
-      detail: `stored ${row.account_id}/${row.business_unit_id} != incoming ${t.accountId}/${t.businessUnitId}`,
-    };
-  }
-
   if (row.content_hash === t.contentHash) {
     return { ticketId: row.id, outcome: "skipped" };
   }
 
-  // Update mutable fields only. Immutable (account_id, business_unit_id,
-  // ticket_number, created_at, clickup_task_id) are intentionally NOT touched.
+  // ORIGIN transitions (single<->multi) are legitimate derived-data updates,
+  // but always audited (docs/shared-tickets.md §2). Immutable fields
+  // (ticket_number, created_at, clickup_task_id) stay untouched.
+  const originChanged =
+    row.account_id !== t.originAccountId ||
+    row.business_unit_id !== t.originBusinessUnitId;
+
   await client.query(
     `UPDATE internal_tickets
         SET title_internal = $2, description_internal = $3,
             priority = $4::priority_level, current_stage = $5::portal_stage,
             clickup_raw_status = $6, content_hash = $7,
+            account_id = $8, business_unit_id = $9,
             last_synced_at = now(), updated_at = now()
       WHERE id = $1`,
     [
@@ -223,8 +243,26 @@ async function upsertTicket(
       t.currentStage,
       t.rawStatus,
       t.contentHash,
+      t.originAccountId,
+      t.originBusinessUnitId,
     ]
   );
+  await reconcileVisibility(client, row.id, t);
+
+  if (originChanged) {
+    await client.query(
+      `INSERT INTO audit_events
+         (entity_type, entity_id, account_id, field, old_value, new_value, change_source, actor)
+       VALUES ('internal_ticket', $1, $2, 'origin', $3::jsonb, $4::jsonb, 'SYNC', 'sync')`,
+      [
+        row.id,
+        t.originAccountId, // account context of the NEW origin (null for shared)
+        JSON.stringify({ accountId: row.account_id, businessUnitId: row.business_unit_id }),
+        JSON.stringify({ accountId: t.originAccountId, businessUnitId: t.originBusinessUnitId }),
+      ]
+    );
+  }
+
   return { ticketId: row.id, outcome: "updated" };
 }
 
@@ -384,24 +422,7 @@ export async function runClickupSync(options: { logger?: Logger } = {}): Promise
             return up;
           });
 
-          if (r.outcome === "tenancy_conflict") {
-            counters.quarantined += 1;
-            quarantines.push({
-              clickupTaskId: task.id,
-              customId: task.custom_id ?? null,
-              reason: "TENANCY_CHANGED",
-              detail: r.detail ?? "tenant mapping changed",
-            });
-            log.warn("ticket_quarantined", {
-              clickupTask: task.id,
-              customId: task.custom_id ?? null,
-              operation: "tenancy-check",
-              reason: "TENANCY_CHANGED",
-              detail: r.detail,
-              recovery:
-                "tenant mapping changed since import; left untouched. Resolve in ClickUp/admin — it re-syncs on next update.",
-            });
-          } else if (r.outcome === "inserted") {
+          if (r.outcome === "inserted") {
             counters.inserted += 1;
           } else if (r.outcome === "updated") {
             counters.updated += 1;

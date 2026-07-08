@@ -29,6 +29,7 @@ const EXPECTED_TABLES = [
   "sla_calendar_holidays",
   "sla_policies",
   "internal_tickets",
+  "internal_ticket_business_units",
   "internal_ticket_events",
   "customer_tickets",
   "customer_ticket_timeline",
@@ -140,6 +141,58 @@ async function main(): Promise<void> {
   await expectCount("sla_calendars", "SELECT count(*) AS n FROM sla_calendars", 1);
   await expectCount("sla_policies (global P1-P3)", "SELECT count(*) AS n FROM sla_policies", 3);
   await expectCount("sla_policies all global", "SELECT count(*) AS n FROM sla_policies WHERE account_id IS NULL AND business_unit_id IS NULL", 3);
+
+  // --- Shared-ticket executable design invariants (Stage 9a) -----------------
+  // The docs/shared-tickets.md design in test form: visibility lives ONLY in
+  // the junction; origin is populated iff it is objectively real; the customer
+  // projection is a subset of the junction. Count-zero-violations style.
+
+  await expectCount(
+    "9a-1 every internal ticket has >= 1 visibility junction row",
+    `SELECT count(*) AS n FROM internal_tickets t
+      WHERE t.deleted_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM internal_ticket_business_units j
+           WHERE j.internal_ticket_id = t.id
+        )`,
+    0
+  );
+  await expectCount(
+    "9a-2 single-BU ticket => origin set and equal to its junction row",
+    `SELECT count(*) AS n FROM internal_tickets t
+      WHERE t.deleted_at IS NULL
+        AND (SELECT count(*) FROM internal_ticket_business_units j
+              WHERE j.internal_ticket_id = t.id) = 1
+        AND (t.business_unit_id IS NULL
+             OR t.account_id IS NULL
+             OR t.business_unit_id <> (SELECT j.business_unit_id
+                                         FROM internal_ticket_business_units j
+                                        WHERE j.internal_ticket_id = t.id)
+             OR t.account_id <> (SELECT b.account_id
+                                   FROM internal_ticket_business_units j
+                                   JOIN business_units b ON b.id = j.business_unit_id
+                                  WHERE j.internal_ticket_id = t.id))`,
+    0
+  );
+  await expectCount(
+    "9a-3 multi-BU ticket => origin IS NULL (no fabricated origin)",
+    `SELECT count(*) AS n FROM internal_tickets t
+      WHERE t.deleted_at IS NULL
+        AND (SELECT count(*) FROM internal_ticket_business_units j
+              WHERE j.internal_ticket_id = t.id) > 1
+        AND (t.account_id IS NOT NULL OR t.business_unit_id IS NOT NULL)`,
+    0
+  );
+  await expectCount(
+    "9a-4 no projection row without its visibility junction row",
+    `SELECT count(*) AS n FROM customer_tickets ct
+      WHERE NOT EXISTS (
+        SELECT 1 FROM internal_ticket_business_units j
+         WHERE j.internal_ticket_id = ct.internal_ticket_id
+           AND j.business_unit_id = ct.business_unit_id
+      )`,
+    0
+  );
 
   // --- Portal auth structural invariants (Stage 8a; identity columns
   // generalised in Stage 8b) --------------------------------------------------

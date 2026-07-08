@@ -150,9 +150,13 @@ CREATE TABLE sla_policies (
 CREATE TABLE internal_tickets (
   id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-  -- Tenancy (attribution resolved by sync; mis-attribution => quarantine, never guess)
-  account_id              UUID NOT NULL REFERENCES accounts(id)       ON DELETE RESTRICT,
-  business_unit_id        UUID NOT NULL REFERENCES business_units(id) ON DELETE RESTRICT,
+  -- ORIGIN (Stage 9a, docs/shared-tickets.md): internal reporting data only,
+  -- NEVER a visibility input. Populated only when objectively real — i.e. the
+  -- visibility set (junction below) has exactly one member, and then equals
+  -- it. NULL = multi-BU/shared ticket (no origin is fabricated). Visibility
+  -- comes exclusively from internal_ticket_business_units.
+  account_id              UUID REFERENCES accounts(id)       ON DELETE RESTRICT,
+  business_unit_id        UUID REFERENCES business_units(id) ON DELETE RESTRICT,
 
   -- Source linkage
   ticket_number           TEXT NOT NULL,           -- e.g. 'PEP-001234'
@@ -199,11 +203,22 @@ CREATE TABLE internal_tickets (
   updated_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
 
   CONSTRAINT internal_tickets_clickup_task_id_key UNIQUE (clickup_task_id),
-  CONSTRAINT internal_tickets_account_number_key  UNIQUE (account_id, ticket_number),
+  CONSTRAINT internal_tickets_ticket_number_key   UNIQUE (ticket_number),
   CONSTRAINT internal_tickets_milestone_chk CHECK (
     (acknowledged_at IS NULL OR acknowledged_at >= created_at) AND
     (resolved_at IS NULL OR closed_at IS NULL OR closed_at >= resolved_at)
   )
+);
+
+-- VISIBILITY set (Stage 9a): the SOLE source of which business units (and thus
+-- accounts) may see a ticket. One canonical internal ticket, one row here per
+-- visible BU; the customer projection fans out one customer_tickets row per
+-- member. Trust model: the ClickUp Customer label set IS the sharing decision.
+CREATE TABLE internal_ticket_business_units (
+  internal_ticket_id UUID NOT NULL REFERENCES internal_tickets(id) ON DELETE CASCADE,
+  business_unit_id   UUID NOT NULL REFERENCES business_units(id)   ON DELETE RESTRICT,
+  added_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (internal_ticket_id, business_unit_id)
 );
 
 -- Canonical, append-only lifecycle timeline (internal source of truth).
@@ -261,7 +276,8 @@ CREATE TABLE customer_tickets (
   published_at         TIMESTAMPTZ,
   last_projected_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-  CONSTRAINT customer_tickets_internal_key UNIQUE (internal_ticket_id),
+  -- One projection row per (canonical ticket x visible BU) — Stage 9a fan-out.
+  CONSTRAINT customer_tickets_internal_bu_key UNIQUE (internal_ticket_id, business_unit_id),
   CONSTRAINT customer_tickets_account_number_key UNIQUE (account_id, ticket_number),
   -- Defence-in-depth: only ever live or retracted rows belong in the projection.
   CONSTRAINT customer_tickets_visibility_chk CHECK (
@@ -397,6 +413,7 @@ CREATE TABLE sync_runs (
 CREATE INDEX idx_business_units_account ON business_units (account_id);
 
 -- INTERNAL: sync/reconciliation + transformation candidate selection
+CREATE INDEX idx_itbu_business_unit ON internal_ticket_business_units (business_unit_id);
 CREATE INDEX idx_internal_tickets_last_synced ON internal_tickets (last_synced_at);
 CREATE INDEX idx_internal_tickets_visibility
   ON internal_tickets (visibility_state)

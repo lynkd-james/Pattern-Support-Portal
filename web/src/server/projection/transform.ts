@@ -25,7 +25,11 @@ import { env } from "../env";
 import { query, withTransaction } from "../db";
 import { createLogger, type Logger } from "../logger";
 import { stageLabel } from "./labels";
-import { determineVisibility, isPublished, type Visibility } from "./visibility";
+import {
+  determineVisibility,
+  planProjectionRows,
+  type Visibility,
+} from "./visibility";
 
 const BATCH = 500;
 const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
@@ -51,8 +55,9 @@ export interface ProjectionSummary {
 
 interface InternalRow {
   id: string;
-  account_id: string;
-  business_unit_id: string;
+  /** ORIGIN columns (Stage 9a): nullable, reporting-only — never a projection input. */
+  account_id: string | null;
+  business_unit_id: string | null;
   ticket_number: string;
   title_internal: string;
   customer_summary: string | null;
@@ -146,7 +151,8 @@ async function audit(
   args: {
     entityType: string;
     entityId: string;
-    accountId: string;
+    /** Nullable since Stage 9a: a shared ticket's internal events have no single account. */
+    accountId: string | null;
     field: string;
     oldValue: unknown;
     newValue: unknown;
@@ -173,11 +179,53 @@ interface PublishResult {
   priorVisibility: string | null;
 }
 
-/** Upsert a published customer row. Uses an explicit existence check (no xmax). */
-async function upsertPublished(client: PoolClient, r: InternalRow): Promise<PublishResult> {
+/** A member of the ticket's visibility set (junction row + its account). */
+interface VisibleScope {
+  business_unit_id: string;
+  account_id: string;
+}
+
+/** The ticket's current visibility set, deterministically ordered. */
+async function fetchVisibilitySet(
+  client: PoolClient,
+  internalId: string
+): Promise<VisibleScope[]> {
+  const res = await client.query<VisibleScope>(
+    `SELECT b.id AS business_unit_id, b.account_id
+       FROM internal_ticket_business_units j
+       JOIN business_units b ON b.id = j.business_unit_id
+      WHERE j.internal_ticket_id = $1
+      ORDER BY b.id`,
+    [internalId]
+  );
+  return res.rows;
+}
+
+/** BU ids of ALL existing customer rows for the ticket (any visibility state). */
+async function fetchExistingRowBuIds(
+  client: PoolClient,
+  internalId: string
+): Promise<string[]> {
+  const res = await client.query<{ business_unit_id: string }>(
+    `SELECT business_unit_id FROM customer_tickets WHERE internal_ticket_id = $1`,
+    [internalId]
+  );
+  return res.rows.map((r) => r.business_unit_id);
+}
+
+/**
+ * Upsert the published customer row for ONE visible scope (Stage 9a fan-out:
+ * one row per (internal ticket x BU)). Explicit existence check (no xmax).
+ */
+async function upsertPublished(
+  client: PoolClient,
+  r: InternalRow,
+  scope: VisibleScope
+): Promise<PublishResult> {
   const pre = await client.query<{ id: string; visibility_state: string }>(
-    `SELECT id, visibility_state FROM customer_tickets WHERE internal_ticket_id = $1`,
-    [r.id]
+    `SELECT id, visibility_state FROM customer_tickets
+      WHERE internal_ticket_id = $1 AND business_unit_id = $2`,
+    [r.id, scope.business_unit_id]
   );
   const existed = pre.rowCount !== null && pre.rowCount > 0;
   const priorVisibility = existed ? pre.rows[0].visibility_state : null;
@@ -190,9 +238,8 @@ async function upsertPublished(client: PoolClient, r: InternalRow): Promise<Publ
         visibility_state, published_at, last_projected_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7::priority_level,$8::portal_stage,$9,$10,$11,$12,$13,
              $14,$15,$16::sla_state,$17::sla_state,'published', now(), now())
-     ON CONFLICT (internal_ticket_id) DO UPDATE SET
+     ON CONFLICT (internal_ticket_id, business_unit_id) DO UPDATE SET
         account_id = EXCLUDED.account_id,
-        business_unit_id = EXCLUDED.business_unit_id,
         ticket_number = EXCLUDED.ticket_number,
         title = EXCLUDED.title,
         description = EXCLUDED.description,
@@ -213,8 +260,8 @@ async function upsertPublished(client: PoolClient, r: InternalRow): Promise<Publ
      RETURNING id`,
     [
       r.id,
-      r.account_id,
-      r.business_unit_id,
+      scope.account_id,
+      scope.business_unit_id,
       r.ticket_number,
       r.title_internal, // title (sanitised in V1 == internal title; no separate sanitiser yet)
       r.customer_summary, // description: ONLY the authored customer-safe summary (null until set)
@@ -263,24 +310,63 @@ async function rebuildTimeline(
   }
 }
 
-/** Withdraw an existing customer row (if any) from the portal. */
-async function withdraw(
+/**
+ * TOMBSTONE-hide member rows (ticket unpublished; junction rows still exist,
+ * so invariant 9a-4 holds — 8a-era retention behaviour, unchanged). Returns
+ * rows actually transitioned (already-hidden rows are not re-withdrawn).
+ */
+async function hideRows(
   client: PoolClient,
-  internalId: string
-): Promise<{ withdrawn: boolean; customerId: string | null }> {
-  const res = await client.query<{ id: string }>(
+  internalId: string,
+  buIds: readonly string[]
+): Promise<Array<{ id: string; account_id: string }>> {
+  if (buIds.length === 0) return [];
+  const res = await client.query<{ id: string; account_id: string }>(
     `UPDATE customer_tickets
         SET visibility_state = 'hidden_from_customer', last_projected_at = now()
-      WHERE internal_ticket_id = $1 AND visibility_state <> 'hidden_from_customer'
-      RETURNING id`,
-    [internalId]
+      WHERE internal_ticket_id = $1
+        AND business_unit_id = ANY($2::uuid[])
+        AND visibility_state <> 'hidden_from_customer'
+      RETURNING id, account_id`,
+    [internalId, buIds]
   );
-  if (res.rowCount === 0) return { withdrawn: false, customerId: null };
-  const customerId = res.rows[0].id;
-  await client.query(`DELETE FROM customer_ticket_timeline WHERE customer_ticket_id = $1`, [
-    customerId,
-  ]);
-  return { withdrawn: true, customerId };
+  for (const row of res.rows) {
+    await client.query(
+      `DELETE FROM customer_ticket_timeline WHERE customer_ticket_id = $1`,
+      [row.id]
+    );
+  }
+  return res.rows;
+}
+
+/**
+ * HARD-DELETE de-listed rows (Stage 9a: the BU's junction row is gone —
+ * entitlement revoked; a tombstone would permanently violate invariant 9a-4.
+ * The withdrawal survives in append-only audit_events). Timeline rows cascade
+ * via FK, deleted explicitly for symmetry. Sibling rows are untouched —
+ * withdrawal is surgical, never delete-and-recreate.
+ */
+async function deleteDelistedRows(
+  client: PoolClient,
+  internalId: string,
+  buIds: readonly string[]
+): Promise<Array<{ id: string; account_id: string; wasPublished: boolean }>> {
+  if (buIds.length === 0) return [];
+  const res = await client.query<{
+    id: string;
+    account_id: string;
+    visibility_state: string;
+  }>(
+    `DELETE FROM customer_tickets
+      WHERE internal_ticket_id = $1 AND business_unit_id = ANY($2::uuid[])
+      RETURNING id, account_id, visibility_state`,
+    [internalId, buIds]
+  );
+  return res.rows.map((r) => ({
+    id: r.id,
+    account_id: r.account_id,
+    wasPublished: r.visibility_state === "published",
+  }));
 }
 
 type Outcome = "published_new" | "published_updated" | "withdrawn" | "noop";
@@ -316,43 +402,81 @@ async function processTicket(
       visibilityChanged = true;
     }
 
-    if (isPublished(target)) {
-      const { customerId, existed, priorVisibility } = await upsertPublished(client, r);
+    // Stage 9a: plan per-BU rows as a pure function of the internal model —
+    // visibility set (junction) x target visibility x existing rows. Any row
+    // a full rebuild would not produce is withdrawn here (invariant 5).
+    const visibleScopes = await fetchVisibilitySet(client, r.id);
+    const existingRowBuIds = await fetchExistingRowBuIds(client, r.id);
+    const plan = planProjectionRows({
+      target,
+      visibilityBuIds: visibleScopes.map((s) => s.business_unit_id),
+      existingRowBuIds,
+    });
+
+    let anyNew = false;
+    let anyPublished = false;
+    for (const scope of visibleScopes) {
+      if (!plan.publish.includes(scope.business_unit_id)) continue;
+      const { customerId, existed, priorVisibility } = await upsertPublished(
+        client,
+        r,
+        scope
+      );
       await rebuildTimeline(client, customerId, r.id);
+      anyPublished = true;
       if (!existed) {
+        anyNew = true;
         await audit(client, {
           entityType: "customer_ticket",
           entityId: customerId,
-          accountId: r.account_id,
+          accountId: scope.account_id,
           field: "projection",
           oldValue: null,
           newValue: { visibility_state: "published", stage: r.current_stage },
         });
-        return { outcome: "published_new", visibilityChanged };
-      }
-      if (priorVisibility !== "published") {
+      } else if (priorVisibility !== "published") {
         await audit(client, {
           entityType: "customer_ticket",
           entityId: customerId,
-          accountId: r.account_id,
+          accountId: scope.account_id,
           field: "visibility_state",
           oldValue: priorVisibility,
           newValue: "published",
         });
       }
-      return { outcome: "published_updated", visibilityChanged };
     }
 
-    const { withdrawn, customerId } = await withdraw(client, r.id);
-    if (withdrawn && customerId) {
+    const hidden = await hideRows(client, r.id, plan.hide);
+    for (const row of hidden) {
       await audit(client, {
         entityType: "customer_ticket",
-        entityId: customerId,
-        accountId: r.account_id,
+        entityId: row.id,
+        accountId: row.account_id,
         field: "visibility_state",
         oldValue: "published",
         newValue: "hidden_from_customer",
       });
+    }
+
+    const removed = await deleteDelistedRows(client, r.id, plan.remove);
+    for (const row of removed) {
+      await audit(client, {
+        entityType: "customer_ticket",
+        entityId: row.id,
+        accountId: row.account_id,
+        field: "projection",
+        oldValue: { visibility_state: row.wasPublished ? "published" : "hidden_from_customer" },
+        newValue: { removed: true, reason: "business unit de-listed from visibility set" },
+      });
+    }
+
+    if (anyPublished) {
+      return {
+        outcome: anyNew ? "published_new" : "published_updated",
+        visibilityChanged,
+      };
+    }
+    if (hidden.length > 0 || removed.length > 0) {
       return { outcome: "withdrawn", visibilityChanged };
     }
     return { outcome: "noop", visibilityChanged };
