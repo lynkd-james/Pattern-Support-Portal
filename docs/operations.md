@@ -75,13 +75,28 @@ in logs). Generate with `openssl rand -base64 32`.
 1. Vercel env: `DATABASE_URL` (pooled, migrated: `db:migrate` + `db:seed` +
    `db:verify`), `CLICKUP_*`, `GRAPH_*`, `AUTH_ENABLED_PROVIDERS=entra,google`
    + `AUTH_ENTRA_*`/`AUTH_GOOGLE_*` + `PORTAL_BASE_URL`, `CRON_SECRET`.
-2. Register production redirect URIs on both OAuth apps.
-3. Confirm the Vercel plan supports sub-daily cron (Pro) — the 15-minute
+2. **ClickUp custom-field names must match the workspace (REQUIRED — else
+   every ticket quarantines):** set **`CLICKUP_SLA_PRIORITY_FIELD_NAME=SLA`**
+   — the workspace's SLA-priority label field is named "SLA", but the code
+   default is "SLA Priority", so leaving it unset quarantines every ticket as
+   `SLA_PRIORITY_MISSING` (confirmed in the Stage 9a live validation). Also
+   confirm `CLICKUP_CUSTOMER_FIELD_NAME` (default "Customer" — currently
+   correct). *Why this is config, not code:* field names are
+   operator-configurable and a workspace admin may rename them; the resolver
+   must not hard-code them.
+3. Register production redirect URIs on both OAuth apps.
+4. Confirm the Vercel plan supports sub-daily cron (Pro) — the 15-minute
    schedule silently requires it.
-4. ClickUp data hygiene: as of 2026-07-08 every folder task quarantines
-   (6 × SLA_PRIORITY_MISSING, 2 × MULTIPLE_BUSINESS_UNITS) — the pipeline
-   syncs zero tickets until the labels are fixed in ClickUp.
-5. **Deferred decision**: pin function `regions` to sit near the database
+5. **ClickUp status mappings vs the live status set.** The support list uses
+   statuses `backlog`, `to do`, `in progress`, `in review`, `blocked`,
+   `business requirement`, `business review`, `done`, `cancelled`. The seed
+   maps only a subset; unmapped statuses **correctly quarantine**
+   (`STATUS_UNMAPPED` — do not weaken this). Business decision before go-live:
+   either change the ClickUp template default from `backlog`→`to do`, or add
+   `backlog` (and any others that mean NEW/blocked) to `status_mappings`.
+6. ClickUp data hygiene: as of 2026-07-08 the existing folder tasks quarantine
+   (mostly `SLA_PRIORITY_MISSING`) — fix labels in ClickUp so real tickets flow.
+7. **Deferred decision**: pin function `regions` to sit near the database
    (Neon eu-west-2; e.g. `lhr1`). Measurement showed per-ticket costs are
    dominated by DB round-trips (~156 ms from the measurement machine; ~30 ms
    region-aligned). Deliberately NOT set yet.

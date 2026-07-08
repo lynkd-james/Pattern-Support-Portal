@@ -1,9 +1,9 @@
 # Shared Tickets Across Customer Accounts (design — Stage 9a)
 
-Status: **DESIGN FROZEN 2026-07-08** — approved; implementation in progress
-(Stage 9a). If implementation reveals something unexpected, change the
-implementation to fit this design unless a genuine flaw is discovered (which
-requires reviewer sign-off to amend). Replaces the `MULTIPLE_BUSINESS_UNITS`
+Status: **IMPLEMENTED & LIVE-VALIDATED 2026-07-08** (commit `2691464`). Design
+was frozen pre-implementation; one reviewer-approved amendment (determinism vs
+preservation split, below). Live external-system validation report at the end
+of this document. Replaces the `MULTIPLE_BUSINESS_UNITS`
 quarantine with intentional cross-account sharing.
 
 Decision record:
@@ -293,3 +293,40 @@ when it fails, something genuinely important broke.
 Runs in validation environments only — TRUNCATE regenerates row `id`s that
 the API exposes, so **live recovery remains `project:rebuild`** (upsert-based,
 id-preserving); the truncate variant exists purely to prove equivalence.
+
+---
+
+## Live external-system validation (2026-07-08, commit 2691464)
+
+Validated against the real ClickUp workspace, the real sync pipeline, the
+database, and the real portal API (not just automated tests).
+
+> **Architectural claim validated:** a single canonical internal ticket can now
+> be exposed simultaneously to multiple customer tenants **without violating
+> tenant isolation**. This was the entire purpose of Stage 9a; the evidence
+> below proves it end-to-end.
+
+Procedure and evidence:
+
+1. **Create** — ClickUp task `PAT3-3943` in the support folder, Customer =
+   [AYN, RFRY], SLA = P2, status "to do".
+2. **Sync** — `npm run sync:clickup` (with `CLICKUP_SLA_PRIORITY_FIELD_NAME=SLA`):
+   ingested, not quarantined; **junction = [AYN, RFRY]; origin NULL**.
+3. **Database** — 1 internal ticket, 2 junction rows, **2 published
+   customer_tickets rows under two different accounts** (Ayana + Refinery);
+   `db:verify` 22/22 incl. all four 9a invariants; audit clean.
+4. **Portal (real API)** — Ayana sees it; Refinery sees it; **an unrelated
+   account (Woolworths) does not**.
+5. **Withdrawal** — removed the RFRY label in ClickUp, re-synced: junction →
+   [AYN]; **RFRY projection hard-removed**; **surviving Ayana row kept its
+   exact id** (surgical); **origin transition NULL→AYN audited via the sync
+   path** (`change_source=SYNC`); `db:verify` 22/22. Portal: Ayana still sees
+   it, Refinery no longer does.
+6. **Cleanup** — ClickUp ticket deleted, fixtures removed, DB returned to
+   baseline, invariants green.
+
+No implementation defects discovered. Two operational (non-code) findings fed
+into the go-live checklist (`docs/operations.md`): the `CLICKUP_SLA_PRIORITY_
+FIELD_NAME=SLA` requirement and the ClickUp status-mapping review. The
+origin-transition audit write — the one pre-commit coverage gap — was exercised
+live and confirmed here.
