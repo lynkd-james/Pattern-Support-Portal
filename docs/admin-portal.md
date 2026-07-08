@@ -50,13 +50,26 @@ safe **only** if it is walled off completely from the customer surface:
 4. **Role granularity:** single `admin` role in V1; `role` column present so
    `support`/`operations`/`readonly`/`superadmin` can be added later **without
    a migration**.
-5. **Login provider: Entra ID only** for staff (Pattern is Microsoft). The
-   provider abstraction is already proven (8b/8c); adding Google for staff has
-   no business value now and only adds config/test surface.
-6. **Quarantine storage:** read from `sync_runs.details.quarantines` for V1;
+5. **Login provider: Entra ID only, as a SEPARATE single-tenant app
+   registration** (distinct from the customer multi-tenant app). Different
+   security domains deserve independent client IDs, secrets, and redirect URIs
+   (`AUTH_ADMIN_ENTRA_*`, redirect `/api/admin/auth/callback`). Single-tenant
+   means identities outside Pattern's tenant cannot even obtain a token for the
+   admin app — an Entra-level defence layer before our code runs — with
+   independent credential rotation, separate sign-in/consent audit, and room
+   for admin-only Conditional Access/MFA later. The provider abstraction is
+   already proven (8b/8c); Google for staff has no business value now.
+6. **Admin bootstrap is explicit, never automatic.** The first administrator is
+   inserted by a one-time controlled script/SQL helper into `admin_users`.
+   **There is never automatic promotion by email domain or Entra tenant
+   membership.** Tenant membership lets you *authenticate*; only an
+   `admin_users` row makes you an *administrator*. Thereafter admins manage
+   admins through the admin interface (future stage). This preserves the core
+   distinction: authentication proves identity; the table grants authority.
+7. **Quarantine storage:** read from `sync_runs.details.quarantines` for V1;
    introduce a `quarantine_events` table only once production volume justifies
    history/reporting.
-7. **Stage split:** 10a (auth + admin API + internal queries, no dashboard) →
+8. **Stage split:** 10a (auth + admin API + internal queries, no dashboard) →
    10b (dashboard UI) → 10c (analytics/SLA/reporting). Each independently
    reviewable and testable. 10a's goal: *can an authenticated Pattern admin
    securely retrieve internal data?*
@@ -180,6 +193,88 @@ are mostly already in the internal layer or one aggregate away.
 - Admin routes read internal layer only behind a resolved admin session.
 - Deny-by-default + namespace pinning for admins (reuse the 8b/8c invariants).
 - Permanent Vitest coverage for the realm split and the admin query mappers.
+
+## Realm-isolation invariant (first-class, enforced in three places)
+
+**A session is valid only within the realm that created it.**
+
+```
+customer session → customer routes only
+admin session    → admin routes only
+no fallback · no automatic upgrade · no shared middleware
+```
+
+This is the admin-era equivalent of the Stage 9 tenant-isolation invariants.
+Enforced, and tested, in three places:
+
+1. **Middleware** — separate matchers; the admin cookie name
+   (`pattern_admin_session`) is distinct from the customer one
+   (`pattern_portal_session`); each matcher only ever inspects its own realm's
+   cookie. No shared middleware branch.
+2. **API authorization** — `/api/admin/*` resolves ONLY the admin session
+   store; `/api/*` customer routes resolve ONLY the customer session store.
+   A cookie from the wrong realm is not a fallback path — it is simply absent
+   from the store it's checked against → typed 401.
+3. **Automated tests** — a customer cookie → 401 on every `/api/admin/*` route;
+   an admin cookie → 401 on `/api/tickets` + `/api/session`. Both directions,
+   permanent Vitest coverage.
+
+Because the two realms use distinct cookie names AND distinct session tables,
+cross-realm acceptance is structurally impossible, not merely policed — but the
+tests assert it anyway (defence-in-depth + regression tripwire).
+
+## Stage 10a — FROZEN implementation checklist (2026-07-08)
+
+Implementation authority for 10a. One cohesive commit. Order:
+
+1. **Migration `0004`** — `admin_users` (id, email citext unique, display_name,
+   identity_provider, issuer_namespace, subject_identifier, role NOT NULL
+   DEFAULT 'admin', is_active, last_login_at, timestamps; binding CHECK
+   bound⇒pinned; partial unique `(provider, namespace, subject)`); `admin_sessions`
+   (structurally identical to `portal_sessions`, separate table); schema.sql
+   parity; idempotent + fresh-install-safe (house pattern).
+2. **`db:verify` additions** — active admin has `issuer_namespace`;
+   bound⇒pinned (mirrors the portal auth invariants). Proven both ways.
+3. **Admin bootstrap** — a one-time `scripts/admin/bootstrap.ts` (dotenv, like
+   the other scripts) inserting the first `admin_users` row from explicit args
+   (email + Pattern tenant GUID + display name; `role='admin'`, activated once
+   the GUID is captured). NEVER auto-promotes by domain/tenant. Documented in
+   the doc's provisioning section. This is the only way to create the first
+   admin; all subsequent admin management is a future stage.
+4. **Admin identity layer** — reuse the provider abstraction; add a `realm`
+   ('customer' | 'admin') parameter to `auth/handlers.ts` selecting user lookup
+   + session store + cookie; `decideLogin`/adapters/policy/flow reused
+   unchanged. `server/admin/` owns the admin-specific lookup + session store.
+5. **Admin authentication** — `/api/admin/auth/{login,callback,logout}`;
+   `pattern_admin_session` cookie; `AdminSessionProvider` resolving the admin
+   session (sliding idle + absolute cap + admin/active checks on every request,
+   mirroring Stage 8a). Uses the SEPARATE single-tenant admin Entra app
+   (`AUTH_ADMIN_ENTRA_*`, `requireAdminAuth()`).
+6. **Admin authorization + realm-isolation invariant** — require admin session
+   on `/api/admin/*`; deny customer cookies there; deny admin cookies on
+   customer routes; enforce in middleware + API + tests (section above).
+7. **Admin query layer** — `server/admin/queries.ts`, read-only internal-layer
+   mappers, no business logic (mirrors `customer/queries.ts`).
+8. **Admin API** — `/api/admin/{stats,tickets,tickets/:id,sync-runs,audit,
+   quarantine}` (SLA analytics deferred to 10c). Quarantine from
+   `sync_runs.details.quarantines`.
+9. **Import-boundary guard** — unit test asserting no `admin ↔ customer` import
+   edge (both directions).
+10. **Unit tests** — admin identity/decision reuse, realm cookie strictness.
+11. **Integration tests** — admin auth + admin queries against a scratch DB;
+    cross-realm 401 both directions.
+12. **Browser validation** — bootstrap + sign in a real admin (Pattern Entra
+    tenant), retrieve internal data; confirm a customer session is rejected by
+    `/api/admin/*` and vice versa. (Live external-system step, like 8c/9a.)
+13. **External review** — realm isolation, internal-layer exposure behind
+    admin-only auth, no shared code path, invariant coverage.
+14. **Documentation** — update this doc's status to implemented; CLAUDE.md
+    §3/§8/§10; `.env.example` (`AUTH_ADMIN_ENTRA_*`).
+15. **Commit** — `Stage 10a: admin authentication, sessions and internal API`,
+    on approval; push separately.
+
+Goal restated: *an authenticated Pattern admin can securely retrieve internal
+data, and no session crosses the realm boundary.*
 
 ## Open questions
 
