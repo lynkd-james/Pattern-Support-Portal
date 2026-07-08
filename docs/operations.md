@@ -70,33 +70,65 @@ in logs). Generate with `openssl rand -base64 32`.
   before the missed acks) and let the next run re-scan; re-scanning is cheap,
   idempotent and first-write-wins.
 
-## Production go-live checklist (none of this is set yet)
+## Production go-live runbook (ordered; none of this is set yet)
 
-1. Vercel env: `DATABASE_URL` (pooled, migrated: `db:migrate` + `db:seed` +
-   `db:verify`), `CLICKUP_*`, `GRAPH_*`, `AUTH_ENABLED_PROVIDERS=entra,google`
-   + `AUTH_ENTRA_*`/`AUTH_GOOGLE_*` + `PORTAL_BASE_URL`, `CRON_SECRET`.
-2. **ClickUp custom-field names must match the workspace (REQUIRED — else
-   every ticket quarantines):** set **`CLICKUP_SLA_PRIORITY_FIELD_NAME=SLA`**
-   — the workspace's SLA-priority label field is named "SLA", but the code
-   default is "SLA Priority", so leaving it unset quarantines every ticket as
-   `SLA_PRIORITY_MISSING` (confirmed in the Stage 9a live validation). Also
-   confirm `CLICKUP_CUSTOMER_FIELD_NAME` (default "Customer" — currently
-   correct). *Why this is config, not code:* field names are
-   operator-configurable and a workspace admin may rename them; the resolver
-   must not hard-code them.
-3. Register production redirect URIs on both OAuth apps.
-4. Confirm the Vercel plan supports sub-daily cron (Pro) — the 15-minute
-   schedule silently requires it.
-5. **ClickUp status mappings vs the live status set.** The support list uses
-   statuses `backlog`, `to do`, `in progress`, `in review`, `blocked`,
-   `business requirement`, `business review`, `done`, `cancelled`. The seed
-   maps only a subset; unmapped statuses **correctly quarantine**
-   (`STATUS_UNMAPPED` — do not weaken this). Business decision before go-live:
-   either change the ClickUp template default from `backlog`→`to do`, or add
-   `backlog` (and any others that mean NEW/blocked) to `status_mappings`.
-6. ClickUp data hygiene: as of 2026-07-08 the existing folder tasks quarantine
-   (mostly `SLA_PRIORITY_MISSING`) — fix labels in ClickUp so real tickets flow.
-7. **Deferred decision**: pin function `regions` to sit near the database
+Execute top to bottom. Each step has a verification. Steps 1–9 are the Phase-1
+production-readiness gate; the system flows data continuously once they pass.
+Most require operator access (Vercel dashboard, ClickUp admin, secrets) and
+are not automatable from this repo.
+
+1. **Provision the production database.** Point `DATABASE_URL` at the pooled
+   prod Postgres. Apply schema + reference data + migrations:
+   `npm run db:migrate && npm run db:seed && npm run db:verify`.
+   *Verify:* `db:verify` exits 0 (all invariants incl. 9a-1..4 green).
+2. **Set Vercel production env.** `DATABASE_URL` (pooled), `CLICKUP_API_TOKEN`,
+   `CLICKUP_TEAM_ID`, `CLICKUP_SUPPORT_FOLDER_ID`, `GRAPH_*`,
+   `AUTH_ENABLED_PROVIDERS=entra,google`, `AUTH_ENTRA_*`, `AUTH_GOOGLE_*`,
+   `PORTAL_BASE_URL` (prod URL), `CRON_SECRET` (`openssl rand -base64 32`).
+   *Verify:* `npm run env:check` (reads the target env) shows all subsystems OK
+   and the expected `AUTH_ENABLED_PROVIDERS` / `AUTO_PUBLISH_ENABLED`.
+3. **ClickUp field names must match the workspace (REQUIRED — else every ticket
+   quarantines).** Set **`CLICKUP_SLA_PRIORITY_FIELD_NAME=SLA`** — the
+   workspace's SLA-priority label field is named "SLA", but the code default is
+   "SLA Priority"; unset ⇒ every ticket quarantines `SLA_PRIORITY_MISSING`
+   (confirmed in the Stage 9a live validation). Confirm
+   `CLICKUP_CUSTOMER_FIELD_NAME=Customer` (currently correct). *Why config, not
+   code:* field names are operator-configurable and admins may rename them.
+   *Verify:* `env:check` prints the resolved field names and warns on the
+   "SLA Priority" default.
+4. **ClickUp status-mapping review.** The support list uses `backlog`, `to do`,
+   `in progress`, `in review`, `blocked`, `business requirement`,
+   `business review`, `done`, `cancelled`. The seed maps only a subset;
+   unmapped statuses **correctly quarantine** (`STATUS_UNMAPPED` — do not weaken
+   this). Decide before go-live: change the ClickUp template default
+   `backlog`→`to do`, or add `backlog`/others meaning NEW to `status_mappings`.
+   *Verify:* a freshly-created ticket lands on a mapped status.
+5. **Register production OAuth redirect URIs** on both apps:
+   `PORTAL_BASE_URL/api/auth/callback` (Entra) and
+   `PORTAL_BASE_URL/api/auth/google/callback` (Google).
+   *Verify:* a real staff login on prod completes (or the documented denial).
+6. **Confirm the Vercel plan supports sub-daily cron (Pro).** The 15-minute
+   schedule in `vercel.json` silently requires it. *Verify:* Vercel dashboard →
+   Cron Jobs lists all five `/api/jobs/*` entries as scheduled.
+7. **Mailbox verification.** Confirm the Graph app-only registration has
+   admin-consented `Mail.Read` scoped to `GRAPH_SUPPORT_MAILBOX`. First Outlook
+   run backfills the mailbox in bounded invocations (validated: 6,539 msgs / 7
+   runs). *Verify:* trigger `/api/jobs/outlook` with the cron secret; a
+   `sync_runs` row (`source_system='outlook'`) closes SUCCESS.
+8. **ClickUp data hygiene.** As of 2026-07-08 the existing folder tasks
+   quarantine (mostly `SLA_PRIORITY_MISSING`) — fix labels so real tickets flow.
+   *Verify:* after a `clickup` job run, `sync_runs.details` quarantine count
+   drops and `internal_tickets` grows.
+9. **Production smoke test.** With `AUTO_PUBLISH_ENABLED` per the launch
+   decision, trigger the pipeline steps in order and confirm a known ticket
+   flows ClickUp→internal→(SLA)→customer, then loads in the portal for its
+   account. *Verify:* the ticket is visible to its customer login and absent
+   for others (the isolation guarantee).
+10. **Monitoring & alerting (initial).** No alerting exists yet (documented
+    gap). Minimum: a scheduled check that the newest `sync_runs` row per
+    `source_system` is recent and not `FAILED`, surfaced to a channel the team
+    watches. Candidate first Stage-10 ops-dashboard feature.
+11. **Deferred decision**: pin function `regions` to sit near the database
    (Neon eu-west-2; e.g. `lhr1`). Measurement showed per-ticket costs are
    dominated by DB round-trips (~156 ms from the measurement machine; ~30 ms
    region-aligned). Deliberately NOT set yet.

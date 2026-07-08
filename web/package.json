@@ -12,6 +12,7 @@
     "db:migrate": "tsx scripts/db/migrate.ts",
     "db:seed": "tsx scripts/db/seed.ts",
     "db:verify": "tsx scripts/db/verify.ts",
+    "env:check": "tsx scripts/ops/envCheck.ts",
     "sync:clickup": "tsx scripts/sync/clickup.ts",
     "sync:outlook": "tsx scripts/sync/outlook.ts",
     "sla": "tsx scripts/sla/run.ts",
