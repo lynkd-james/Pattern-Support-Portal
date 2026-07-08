@@ -13,6 +13,7 @@
     "sync:clickup": "tsx scripts/sync/clickup.ts",
     "sync:outlook": "tsx scripts/sync/outlook.ts",
     "sla": "tsx scripts/sla/run.ts",
+    "sessions:cleanup": "tsx scripts/sessions/cleanup.ts",
     "project": "tsx scripts/projection/run.ts",
     "project:rebuild": "tsx scripts/projection/run.ts --rebuild"
   },

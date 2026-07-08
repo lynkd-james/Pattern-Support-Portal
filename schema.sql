@@ -378,7 +378,7 @@ CREATE TABLE audit_events (
 
 CREATE TABLE sync_runs (
   id               BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  source_system    TEXT NOT NULL,      -- 'clickup' | 'outlook' | 'transform' | 'sla'
+  source_system    TEXT NOT NULL,      -- 'clickup' | 'outlook' | 'transform' | 'sla' | 'sessions'
   status           sync_status NOT NULL DEFAULT 'RUNNING',
   started_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   finished_at      TIMESTAMPTZ,

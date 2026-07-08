@@ -84,13 +84,24 @@ async function closeRun(
 }
 
 export async function runOutlookSync(
-  options: { logger?: Logger } = {}
+  options: {
+    logger?: Logger;
+    /**
+     * Per-run page bound (Stage 8d). Defaults to the historical safety bound,
+     * so CLI behaviour is unchanged. When a scheduled invocation hits the
+     * bound, the run closes normally with the watermark advanced through the
+     * processed messages — deterministic forward progress across invocations
+     * (details.pageBoundHit = true) — while a crash/timeout persists nothing.
+     */
+    maxPages?: number;
+  } = {}
 ): Promise<OutlookSyncSummary> {
   const startedAt = Date.now();
   const log = (options.logger ?? createLogger("outlook-sync")).child({ run: `outlook-${startedAt}` });
 
   const creds = requireGraph();
   const mailbox = env.graphSupportMailbox;
+  const maxPages = options.maxPages ?? MAX_PAGES;
   const client = new GraphClient(creds, { logger: log });
 
   const since = await lastWatermark();
@@ -113,6 +124,7 @@ export async function runOutlookSync(
   };
 
   let status: OutlookSyncSummary["status"] = "SUCCESS";
+  let pageBoundHit = false;
 
   try {
     let page: GraphMessagesResponse | null = await client.listMessagesFirstPage(mailbox, {
@@ -121,7 +133,7 @@ export async function runOutlookSync(
     });
 
     let pageCount = 0;
-    while (page && pageCount < MAX_PAGES) {
+    while (page && pageCount < maxPages) {
       const messages = page.value ?? [];
       log.info("page_fetched", { page: pageCount, messages: messages.length });
       pageCount += 1;
@@ -228,6 +240,11 @@ export async function runOutlookSync(
       page = nextLink ? await client.get<GraphMessagesResponse>(nextLink) : null;
     }
 
+    // Bounded run stopped with more pages pending: the watermark has advanced
+    // through everything processed, so the next run resumes deterministically.
+    pageBoundHit = page !== null;
+    if (pageBoundHit) log.info("page_bound_hit", { maxPages });
+
     status = c.failed > 0 ? "PARTIAL" : "SUCCESS";
   } catch (fatal) {
     status = "FAILED";
@@ -256,6 +273,8 @@ export async function runOutlookSync(
     ...c,
     mailbox,
     watermark,
+    maxPages,
+    pageBoundHit,
     durationMs: summary.durationMs,
     anomalies,
     unmatchedRefs,

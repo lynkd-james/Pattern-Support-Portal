@@ -147,6 +147,11 @@ export const env = {
     readString("GRAPH_SUPPORT_MAILBOX") ?? "supportdesk@lynkd.co.za",
   graphSyncOverlapMs: readInt("GRAPH_SYNC_OVERLAP_MS", 60_000),
 
+  // Scheduled jobs (Stage 8d). Bearer secret for /api/jobs/*; Vercel Cron
+  // sends it automatically when the CRON_SECRET env var is set. Absent =>
+  // the jobs endpoints fail closed (401).
+  cronSecret: readString("CRON_SECRET"),
+
   // Publishing (Stage 5+) — safe default
   autoPublishEnabled: readBool("AUTO_PUBLISH_ENABLED", false),
 

@@ -38,11 +38,12 @@ Tickets originate in Outlook, are worked in ClickUp, and are surfaced to custome
     │   ├── db/                # migrate.ts, seed.ts, verify.ts, migrations/*.sql (+ README)
     │   ├── sync/              # clickup.ts, outlook.ts (manual sync entrypoints)
     │   ├── projection/        # run.ts (transform internal → customer)
-    │   └── sla/               # run.ts (SLA engine → chained projection)
+    │   ├── sla/               # run.ts (SLA engine → chained projection)
+    │   └── sessions/          # cleanup.ts (expired-session cleanup)
     └── src/
         ├── middleware.ts      # cookie-presence page redirects — UX ONLY, never the security boundary
         ├── app/               # App Router: pages (/dashboard, /login) + /api routes
-        │   └── api/           # tickets, tickets/[id], session, auth/{login,callback,logout}
+        │   └── api/           # tickets, tickets/[id], session, auth/*, jobs/[step] (cron)
         ├── components/dashboard/  # DashboardPage, FilterBar, SummaryCards, TicketTable
         ├── lib/               # client-safe: api.ts, types.ts, display.ts, summary.ts, authCookies.ts
         └── server/            # SERVER-ONLY (never import into client code)
@@ -52,6 +53,7 @@ Tickets originate in Outlook, are worked in ClickUp, and are surfaced to custome
             ├── sync/          # resolve.ts (pure), clickupSync.ts, ackEmail.ts, outlookSync.ts
             ├── projection/    # transform.ts, visibility.ts (pure), labels.ts
             ├── sla/           # calendar.ts (pure), sla.ts (pure), compute.ts (engine)
+            ├── jobs/          # pipeline.ts (advisory-lock orchestrator), sessionCleanup.ts
             ├── auth/          # identity.ts + policy.ts (pure), provider.ts, flow.ts, sessionStore.ts, audit.ts
             │   └── providers/ # per-provider adapters: entra.ts, entraClaims.ts (pure), msal.ts
             └── customer/      # session.ts (factory), portalSession.ts, queries.ts (read-only)
@@ -117,12 +119,15 @@ npm run db:migrate        # apply ../schema.sql
 npm run db:seed           # idempotent reference data (accounts, BUs, status_mappings, calendar, sla_policies)
 npm run db:verify         # read-only structural invariants (gates CI; exits non-zero on failure)
 
-# Ingestion & pipeline (manual entrypoints for now; scheduled in Stage 8)
+# Ingestion & pipeline (manual entrypoints; ALSO scheduled via Vercel Cron —
+# vercel.json → /api/jobs/{clickup,outlook,sla,projection,sessions}, one step
+# per invocation, staggered every 15 min, CRON_SECRET-guarded, advisory-locked)
 npm run sync:clickup      # ClickUp → internal_tickets
 npm run sync:outlook      # supportdesk mailbox → internal_tickets.acknowledged_at
-npm run sla               # SLA engine → then CHAINS the projection
+npm run sla               # SLA engine → then CHAINS the projection (CLI only; scheduled steps run separately)
 npm run project           # transform internal → customer (incremental)
 npm run project:rebuild   # full re-projection (recovery; preserves ADMIN visibility decisions)
+npm run sessions:cleanup  # delete sessions invalid for > 7 days
 
 # App
 npm run dev | build | start | lint
@@ -156,7 +161,7 @@ npm run dev | build | start | lint
 
 ## 9. Configuration (env; all server-only)
 
-Required: `DATABASE_URL` (pooled). ClickUp: `CLICKUP_API_TOKEN`, `CLICKUP_TEAM_ID`, `CLICKUP_SUPPORT_FOLDER_ID` (+ optional `CLICKUP_CUSTOMER_FIELD_NAME`, `CLICKUP_SLA_PRIORITY_FIELD_NAME`, `CLICKUP_SYNC_OVERLAP_MS`, `CLICKUP_INCLUDE_ARCHIVED`). Graph: `GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID`, `GRAPH_CLIENT_SECRET` (+ optional `GRAPH_SUPPORT_MAILBOX`, `GRAPH_SYNC_OVERLAP_MS`). Auth (Stage 8b): `AUTH_ENABLED_PROVIDERS` (comma set: `entra`|`google`|`placeholder`; placeholder exclusive; legacy `AUTH_PROVIDER` honoured as alias until Stage 8d), `AUTH_ENTRA_CLIENT_ID`, `AUTH_ENTRA_CLIENT_SECRET`, `PORTAL_BASE_URL` (+ optional `AUTH_ENTRA_AUTHORITY`, `SESSION_IDLE_HOURS`, `SESSION_MAX_HOURS`, `ALLOW_PLACEHOLDER_AUTH`). Publishing: `AUTO_PUBLISH_ENABLED` (default `false` → tickets park at `ready_for_customer`, not projected). Dev scope: `PORTAL_ACCOUNT_SLUG` (placeholder provider only). Tuning: `PGPOOL_MAX`, `PG_DISABLE_SSL`, `SCHEMA_SQL_PATH`. `env.ts` validates **per subsystem** (DB scripts must not require ClickUp/Graph/auth secrets).
+Required: `DATABASE_URL` (pooled). ClickUp: `CLICKUP_API_TOKEN`, `CLICKUP_TEAM_ID`, `CLICKUP_SUPPORT_FOLDER_ID` (+ optional `CLICKUP_CUSTOMER_FIELD_NAME`, `CLICKUP_SLA_PRIORITY_FIELD_NAME`, `CLICKUP_SYNC_OVERLAP_MS`, `CLICKUP_INCLUDE_ARCHIVED`). Graph: `GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID`, `GRAPH_CLIENT_SECRET` (+ optional `GRAPH_SUPPORT_MAILBOX`, `GRAPH_SYNC_OVERLAP_MS`). Auth (Stage 8b): `AUTH_ENABLED_PROVIDERS` (comma set: `entra`|`google`|`placeholder`; placeholder exclusive; legacy `AUTH_PROVIDER` honoured as alias until Stage 8d), `AUTH_ENTRA_CLIENT_ID`, `AUTH_ENTRA_CLIENT_SECRET`, `PORTAL_BASE_URL` (+ optional `AUTH_ENTRA_AUTHORITY`, `SESSION_IDLE_HOURS`, `SESSION_MAX_HOURS`, `ALLOW_PLACEHOLDER_AUTH`). Jobs (Stage 8d): `CRON_SECRET` (guards `/api/jobs/*`; absent → fail closed). Publishing: `AUTO_PUBLISH_ENABLED` (default `false` → tickets park at `ready_for_customer`, not projected). Dev scope: `PORTAL_ACCOUNT_SLUG` (placeholder provider only). Tuning: `PGPOOL_MAX`, `PG_DISABLE_SSL`, `SCHEMA_SQL_PATH`. `env.ts` validates **per subsystem** (DB scripts must not require ClickUp/Graph/auth secrets).
 
 ---
 
@@ -176,9 +181,11 @@ Committed on `main`:
 
 - **Stage 8c** — Google Workspace authentication: `providers/google.ts` (jose: discovery/PKCE/JWKS), parallel `/api/auth/google/*` routes via extracted handler factories, two-button login, `hd` namespace pinning (real-token validated), `email_verified` require-true policy ✓
 
+- **Stage 8d** — Scheduled pipeline: advisory-lock orchestrator (`jobs/pipeline.ts`), `CRON_SECRET`-guarded `/api/jobs/{step}` (one step per invocation, staggered 15-min crons in `vercel.json`), bounded Outlook backfill (real-mailbox validated: 6,539 msgs / 7 invocations), expired-session cleanup, ops runbook `docs/operations.md` with measured baselines. Hosting decision: **Vercel Cron confirmed** (worst observed step 31 s vs 300 s budget) ✓
+
 Next:
 
-- **Stage 8d** — Scheduled ~15-min pipeline: advisory-lock orchestrator, `CRON_SECRET`-guarded jobs route runnable **one step per invocation**, expired-session cleanup. Plus auth carry-overs (see docs/identity-providers.md §10): legacy `AUTH_PROVIDER` alias removal, bound-path provider assertion, multi-domain `hd` verification, runtime `MISSING_NAMESPACE` validation, Internal-vs-External Google OAuth strategy. Hosting decision pends a worst-case duration measurement (Vercel Cron if it fits with headroom, else recommend Azure-hosted).
+- **Auth carry-overs** (see docs/identity-providers.md §10): legacy `AUTH_PROVIDER` alias removal, bound-path provider assertion, multi-domain `hd` verification, runtime `MISSING_NAMESPACE` validation, Internal-vs-External Google OAuth strategy.
 - Later phases: SLA analytics & reporting; admin & scaling features.
 - **Account grouping (known future requirement):** SG / LAR / CUMi umbrella views (a group contact seeing all their brands' tickets). The current one-account-per-code model does not support it. Likely shape: nullable `account_group_id` + group-scoped portal users. Do not build preemptively.
 - **Non-Microsoft client identity:** if a client without an Entra tenant appears, add a second `SessionProvider` (Entra External ID preferred; magic-link revival for no-IdP clients). Do not adopt an identity broker preemptively.
