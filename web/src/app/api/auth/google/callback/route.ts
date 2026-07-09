@@ -1,13 +1,12 @@
 // =============================================================================
-// GET /api/auth/google/callback — complete the Google Workspace sign-in flow.
-// Thin route over the provider-independent handler factory (auth/handlers.ts):
-// same validation order, failure surfaces, namespace pinning, once-only
-// binding, session and audit semantics as the Entra flow.
+// GET /api/auth/google/callback — complete the Google Workspace sign-in flow
+// (customer realm). Thin route over the shared handler factory + customer realm.
 // =============================================================================
 
 import { makeCallbackHandler } from "@/server/auth/handlers";
+import { customerRealm } from "@/server/customer/authRealm";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export const GET = makeCallbackHandler("google");
+export const GET = makeCallbackHandler(customerRealm, "google");

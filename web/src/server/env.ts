@@ -174,6 +174,13 @@ export const env = {
   authGoogleClientId: readString("AUTH_GOOGLE_CLIENT_ID"),
   authGoogleClientSecret: readString("AUTH_GOOGLE_CLIENT_SECRET"),
 
+  // Admin sign-in (Stage 10a). A SEPARATE, SINGLE-TENANT Entra app (distinct
+  // trust boundary from the customer multi-tenant app). Authority is pinned to
+  // Pattern's tenant so identities outside it cannot obtain a token.
+  authAdminEntraClientId: readString("AUTH_ADMIN_ENTRA_CLIENT_ID"),
+  authAdminEntraClientSecret: readString("AUTH_ADMIN_ENTRA_CLIENT_SECRET"),
+  authAdminEntraTenantId: readString("AUTH_ADMIN_ENTRA_TENANT_ID"),
+
   // Absolute base URL of the portal (redirect URI base), e.g. https://portal.example.com
   portalBaseUrl: readString("PORTAL_BASE_URL"),
   sessionIdleHours: readInt("SESSION_IDLE_HOURS", 8),
@@ -241,6 +248,34 @@ export function requirePortalAuth(): {
     clientId: env.authEntraClientId!,
     clientSecret: env.authEntraClientSecret!,
     authority: env.authEntraAuthority,
+    baseUrl: env.portalBaseUrl!.replace(/\/+$/, ""),
+  };
+}
+
+/**
+ * Required for admin sign-in (Stage 10a). SEPARATE single-tenant Entra app;
+ * authority is pinned to Pattern's tenant (identities outside it cannot get a
+ * token). Redirect base is PORTAL_BASE_URL (same host, distinct callback path).
+ */
+export function requireAdminAuth(): {
+  clientId: string;
+  clientSecret: string;
+  authority: string;
+  tenantId: string;
+  baseUrl: string;
+} {
+  const missing: string[] = [];
+  if (!env.authAdminEntraClientId) missing.push("AUTH_ADMIN_ENTRA_CLIENT_ID");
+  if (!env.authAdminEntraClientSecret) missing.push("AUTH_ADMIN_ENTRA_CLIENT_SECRET");
+  if (!env.authAdminEntraTenantId) missing.push("AUTH_ADMIN_ENTRA_TENANT_ID");
+  if (!env.portalBaseUrl) missing.push("PORTAL_BASE_URL");
+  if (missing.length) throw new MissingEnvError(missing, "admin auth (Entra)");
+  return {
+    clientId: env.authAdminEntraClientId!,
+    clientSecret: env.authAdminEntraClientSecret!,
+    tenantId: env.authAdminEntraTenantId!,
+    // Single-tenant authority (NOT 'organizations') — the tenant-level gate.
+    authority: `https://login.microsoftonline.com/${env.authAdminEntraTenantId!}`,
     baseUrl: env.portalBaseUrl!.replace(/\/+$/, ""),
   };
 }

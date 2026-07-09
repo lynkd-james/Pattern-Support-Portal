@@ -43,7 +43,7 @@ Tickets originate in Outlook, are worked in ClickUp, and are surfaced to custome
     └── src/
         ├── middleware.ts      # cookie-presence page redirects — UX ONLY, never the security boundary
         ├── app/               # App Router: pages (/dashboard, /login) + /api routes
-        │   └── api/           # tickets, tickets/[id], session, auth/*, jobs/[step] (cron)
+        │   └── api/           # tickets, tickets/[id], session, auth/*, jobs/[step] (cron), admin/* (Stage 10a)
         ├── components/dashboard/  # DashboardPage, FilterBar, SummaryCards, TicketTable
         ├── lib/               # client-safe: api.ts, types.ts, display.ts, summary.ts, authCookies.ts
         └── server/            # SERVER-ONLY (never import into client code)
@@ -54,9 +54,11 @@ Tickets originate in Outlook, are worked in ClickUp, and are surfaced to custome
             ├── projection/    # transform.ts, visibility.ts (pure), labels.ts
             ├── sla/           # calendar.ts (pure), sla.ts (pure), compute.ts (engine)
             ├── jobs/          # pipeline.ts (advisory-lock orchestrator), sessionCleanup.ts
-            ├── auth/          # identity.ts + policy.ts (pure), provider.ts, flow.ts, sessionStore.ts, audit.ts
-            │   └── providers/ # per-provider adapters: entra.ts, entraClaims.ts (pure), msal.ts
-            └── customer/      # session.ts (factory), portalSession.ts, queries.ts (read-only)
+            ├── auth/          # SHARED auth: identity.ts + policy.ts (pure), provider.ts, realm.ts, flow.ts, handlers.ts, sessionStore.ts, audit.ts
+            │   └── providers/ # per-provider adapters: entra.ts, entraClaims.ts (pure), google*, msal.ts (per-app factory)
+            ├── customer/      # CUSTOMER realm: session.ts (factory), portalSession.ts, authRealm.ts, queries.ts
+            └── admin/         # ADMIN realm (Stage 10a): authRealm.ts, adminSessionStore.ts, session.ts, adminAudit.ts, queries.ts
+                               #   customer/** and admin/** NEVER import each other (import-boundary.test.ts)
 ```
 
 ---
@@ -128,6 +130,8 @@ npm run sla               # SLA engine → then CHAINS the projection (CLI only;
 npm run project           # transform internal → customer (incremental)
 npm run project:rebuild   # full re-projection (recovery; preserves ADMIN visibility decisions)
 npm run sessions:cleanup  # delete sessions invalid for > 7 days
+npm run admin:bootstrap   # create the first admin_users row (Stage 10a; explicit args)
+npm run env:check         # read-only per-subsystem production-readiness report
 
 # App
 npm run dev | build | start | lint
@@ -167,7 +171,7 @@ npm run test:integration  # workflow tier — isolated scratch DB (tests/integra
 
 ## 9. Configuration (env; all server-only)
 
-Required: `DATABASE_URL` (pooled). ClickUp: `CLICKUP_API_TOKEN`, `CLICKUP_TEAM_ID`, `CLICKUP_SUPPORT_FOLDER_ID` (+ optional `CLICKUP_CUSTOMER_FIELD_NAME`, `CLICKUP_SLA_PRIORITY_FIELD_NAME`, `CLICKUP_SYNC_OVERLAP_MS`, `CLICKUP_INCLUDE_ARCHIVED`). Graph: `GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID`, `GRAPH_CLIENT_SECRET` (+ optional `GRAPH_SUPPORT_MAILBOX`, `GRAPH_SYNC_OVERLAP_MS`). Auth (Stage 8b): `AUTH_ENABLED_PROVIDERS` (comma set: `entra`|`google`|`placeholder`; placeholder exclusive; legacy `AUTH_PROVIDER` honoured as alias until Stage 8d), `AUTH_ENTRA_CLIENT_ID`, `AUTH_ENTRA_CLIENT_SECRET`, `PORTAL_BASE_URL` (+ optional `AUTH_ENTRA_AUTHORITY`, `SESSION_IDLE_HOURS`, `SESSION_MAX_HOURS`, `ALLOW_PLACEHOLDER_AUTH`). Jobs (Stage 8d): `CRON_SECRET` (guards `/api/jobs/*`; absent → fail closed). Publishing: `AUTO_PUBLISH_ENABLED` (default `false` → tickets park at `ready_for_customer`, not projected). Dev scope: `PORTAL_ACCOUNT_SLUG` (placeholder provider only). Tuning: `PGPOOL_MAX`, `PG_DISABLE_SSL`, `SCHEMA_SQL_PATH`. `env.ts` validates **per subsystem** (DB scripts must not require ClickUp/Graph/auth secrets).
+Required: `DATABASE_URL` (pooled). ClickUp: `CLICKUP_API_TOKEN`, `CLICKUP_TEAM_ID`, `CLICKUP_SUPPORT_FOLDER_ID` (+ optional `CLICKUP_CUSTOMER_FIELD_NAME`, `CLICKUP_SLA_PRIORITY_FIELD_NAME`, `CLICKUP_SYNC_OVERLAP_MS`, `CLICKUP_INCLUDE_ARCHIVED`). Graph: `GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID`, `GRAPH_CLIENT_SECRET` (+ optional `GRAPH_SUPPORT_MAILBOX`, `GRAPH_SYNC_OVERLAP_MS`). Auth (Stage 8b): `AUTH_ENABLED_PROVIDERS` (comma set: `entra`|`google`|`placeholder`; placeholder exclusive; legacy `AUTH_PROVIDER` honoured as alias until Stage 8d), `AUTH_ENTRA_CLIENT_ID`, `AUTH_ENTRA_CLIENT_SECRET`, `PORTAL_BASE_URL` (+ optional `AUTH_ENTRA_AUTHORITY`, `SESSION_IDLE_HOURS`, `SESSION_MAX_HOURS`, `ALLOW_PLACEHOLDER_AUTH`). Admin auth (Stage 10a): `AUTH_ADMIN_ENTRA_CLIENT_ID`, `AUTH_ADMIN_ENTRA_CLIENT_SECRET`, `AUTH_ADMIN_ENTRA_TENANT_ID` (separate single-tenant staff app). Jobs (Stage 8d): `CRON_SECRET` (guards `/api/jobs/*`; absent → fail closed). Publishing: `AUTO_PUBLISH_ENABLED` (default `false` → tickets park at `ready_for_customer`, not projected). Dev scope: `PORTAL_ACCOUNT_SLUG` (placeholder provider only). Tuning: `PGPOOL_MAX`, `PG_DISABLE_SSL`, `SCHEMA_SQL_PATH`. `env.ts` validates **per subsystem** (DB scripts must not require ClickUp/Graph/auth secrets).
 
 ---
 
@@ -189,6 +193,7 @@ Committed on `main`:
 
 - **Stage 8d** — Scheduled pipeline: advisory-lock orchestrator (`jobs/pipeline.ts`), `CRON_SECRET`-guarded `/api/jobs/{step}` (one step per invocation, staggered 15-min crons in `vercel.json`), bounded Outlook backfill (real-mailbox validated: 6,539 msgs / 7 invocations), expired-session cleanup, ops runbook `docs/operations.md` with measured baselines. Hosting decision: **Vercel Cron confirmed** (worst observed step 31 s vs 300 s budget) ✓
 - **Stage 9a** — Shared tickets across customer accounts: `internal_ticket_business_units` junction as sole visibility source, projection fan-out per BU, honest-NULL origin, `MULTIPLE_BUSINESS_UNITS` quarantine removed, four executable `db:verify` invariants, permanent Vitest regression suite (unit + scratch-DB integration) — see `docs/shared-tickets.md` ✓
+- **Stage 10a** — Internal admin realm: separate `admin_users` + `admin_sessions` (isolated from customer identities), separate single-tenant admin Entra app, realm-parametrised auth handlers (reuse the OIDC mechanics, not the identity), `/api/admin/*` read-only internal-layer API (stats, tickets, sync-runs, audit, quarantine), admin bootstrap script, structural realm isolation (distinct cookie + table; enforced in middleware + API + tests), import-boundary guard — see `docs/admin-portal.md`. Live-validated 2026-07-09 (real Entra sign-in; full 10-point realm-isolation matrix incl. session coexistence) ✓
 
 Next:
 

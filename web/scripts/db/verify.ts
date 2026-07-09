@@ -37,6 +37,8 @@ const EXPECTED_TABLES = [
   "portal_user_business_units",
   "magic_link_tokens",
   "portal_sessions",
+  "admin_users",
+  "admin_sessions",
   "audit_events",
   "sync_runs",
 ];
@@ -228,6 +230,22 @@ async function main(): Promise<void> {
        JOIN portal_users u ON u.id = g.user_id
        JOIN business_units b ON b.id = g.business_unit_id
       WHERE b.account_id <> u.account_id`,
+    0
+  );
+
+  // --- Admin realm structural invariants (Stage 10a) ------------------------
+  // Mirror the portal auth invariants; scoped to ACTIVE admins (a pending row
+  // without a captured tenant GUID is a legitimate onboarding state).
+  await expectCount(
+    "every active admin has an issuer_namespace",
+    `SELECT count(*) AS n FROM admin_users
+      WHERE is_active = TRUE AND issuer_namespace IS NULL`,
+    0
+  );
+  await expectCount(
+    "admin bound => pinned (subject implies namespace)",
+    `SELECT count(*) AS n FROM admin_users
+      WHERE subject_identifier IS NOT NULL AND issuer_namespace IS NULL`,
     0
   );
 

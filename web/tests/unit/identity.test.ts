@@ -271,18 +271,23 @@ describe("decideLogin — cross-provider confusion guard", () => {
 // ---- flow cookie strictness --------------------------------------------------
 
 describe("flow cookie", () => {
-  it("round-trips with the provider field", () => {
-    const parsed = parseFlowSecrets(serializeFlowSecrets({ provider: "entra", state: "s", nonce: "n", codeVerifier: "v" }));
+  it("round-trips with the realm + provider fields", () => {
+    const parsed = parseFlowSecrets(serializeFlowSecrets({ realm: "admin", provider: "entra", state: "s", nonce: "n", codeVerifier: "v" }));
+    expect(parsed?.realm).toBe("admin");
     expect(parsed?.provider).toBe("entra");
     expect(parsed?.state).toBe("s");
   });
-  it("rejects a stale 8a-shape cookie without a provider (fails closed)", () => {
-    const legacy = Buffer.from(JSON.stringify({ state: "s", nonce: "n", codeVerifier: "v" })).toString("base64url");
-    expect(parseFlowSecrets(legacy)).toBeNull();
+  it("rejects a stale shape missing realm or provider (fails closed)", () => {
+    const noRealm = Buffer.from(JSON.stringify({ provider: "entra", state: "s", nonce: "n", codeVerifier: "v" })).toString("base64url");
+    const noProvider = Buffer.from(JSON.stringify({ realm: "customer", state: "s", nonce: "n", codeVerifier: "v" })).toString("base64url");
+    expect(parseFlowSecrets(noRealm)).toBeNull();
+    expect(parseFlowSecrets(noProvider)).toBeNull();
   });
-  it("rejects an unknown provider and garbage", () => {
-    const bad = Buffer.from(JSON.stringify({ provider: "okta", state: "s", nonce: "n", codeVerifier: "v" })).toString("base64url");
-    expect(parseFlowSecrets(bad)).toBeNull();
+  it("rejects an unknown realm, unknown provider, and garbage", () => {
+    const badRealm = Buffer.from(JSON.stringify({ realm: "root", provider: "entra", state: "s", nonce: "n", codeVerifier: "v" })).toString("base64url");
+    const badProvider = Buffer.from(JSON.stringify({ realm: "customer", provider: "okta", state: "s", nonce: "n", codeVerifier: "v" })).toString("base64url");
+    expect(parseFlowSecrets(badRealm)).toBeNull();
+    expect(parseFlowSecrets(badProvider)).toBeNull();
     expect(parseFlowSecrets("not-base64-json")).toBeNull();
   });
 });

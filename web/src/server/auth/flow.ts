@@ -20,7 +20,11 @@ import type { IdentityProviderId } from "./identity";
 
 export const FLOW_COOKIE_MAX_AGE_S = 600; // 10 minutes to complete sign-in
 
+/** Which auth realm a flow belongs to (Stage 10a — realm isolation). */
+export type AuthRealmName = "customer" | "admin";
+
 export interface FlowSecrets {
+  realm: AuthRealmName;
   provider: IdentityProviderId;
   state: string;
   nonce: string;
@@ -28,14 +32,17 @@ export interface FlowSecrets {
 }
 
 const PROVIDER_IDS: ReadonlySet<string> = new Set(["entra", "google"]);
+const REALM_NAMES: ReadonlySet<string> = new Set(["customer", "admin"]);
 
 /** Fresh per-flow secrets: CSRF state, ID-token nonce, PKCE verifier+challenge (S256). */
 export function newFlowSecrets(
+  realm: AuthRealmName,
   provider: IdentityProviderId
 ): FlowSecrets & { codeChallenge: string } {
   const codeVerifier = randomBytes(32).toString("base64url");
   const codeChallenge = createHash("sha256").update(codeVerifier).digest("base64url");
   return {
+    realm,
     provider,
     state: randomBytes(16).toString("base64url"),
     nonce: randomBytes(16).toString("base64url"),
@@ -61,6 +68,8 @@ export function parseFlowSecrets(cookieValue: string): FlowSecrets | null {
     if (parsed === null || typeof parsed !== "object") return null;
     const p = parsed as Record<string, unknown>;
     if (
+      typeof p.realm !== "string" ||
+      !REALM_NAMES.has(p.realm) ||
       typeof p.provider !== "string" ||
       !PROVIDER_IDS.has(p.provider) ||
       typeof p.state !== "string" ||
@@ -70,6 +79,7 @@ export function parseFlowSecrets(cookieValue: string): FlowSecrets | null {
       return null;
     }
     return {
+      realm: p.realm as AuthRealmName,
       provider: p.provider as IdentityProviderId,
       state: p.state,
       nonce: p.nonce,

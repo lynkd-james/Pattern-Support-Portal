@@ -374,6 +374,48 @@ CREATE TABLE portal_sessions (
 );
 
 -- =============================================================================
+-- ADMIN REALM (Stage 10a; see docs/admin-portal.md). Staff identities +
+-- sessions, FULLY ISOLATED from the customer identities above. Same
+-- provider-agnostic trust model (identity triple, namespace pinned at
+-- provisioning, subject bound at first login, deny-by-default) — separate
+-- table, separate session store, separate cookie (pattern_admin_session).
+-- Admin login uses a SEPARATE single-tenant Entra app. The first admin is
+-- inserted by scripts/admin/bootstrap.ts; NEVER auto-promoted by domain/tenant.
+-- =============================================================================
+
+CREATE TABLE admin_users (
+  id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  email              CITEXT NOT NULL,
+  display_name       TEXT,
+  identity_provider  TEXT NOT NULL DEFAULT 'entra',
+  issuer_namespace   TEXT,             -- pinned at provisioning (Pattern tenant)
+  subject_identifier TEXT,             -- bound at first login
+  role               TEXT NOT NULL DEFAULT 'admin',  -- single role in V1; extensible without migration
+  is_active          BOOLEAN NOT NULL DEFAULT TRUE,
+  last_login_at      TIMESTAMPTZ,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT admin_users_email_key UNIQUE (email),
+  CONSTRAINT admin_users_provider_chk CHECK (identity_provider IN ('entra', 'google')),
+  CONSTRAINT admin_users_identity_binding_chk CHECK (
+    subject_identifier IS NULL OR issuer_namespace IS NOT NULL
+  )
+);
+
+CREATE TABLE admin_sessions (
+  id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  admin_user_id      UUID NOT NULL REFERENCES admin_users(id) ON DELETE CASCADE,
+  session_token_hash TEXT NOT NULL,    -- SHA-256 of the admin session cookie value
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at         TIMESTAMPTZ NOT NULL,
+  last_seen_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  revoked_at         TIMESTAMPTZ,
+  user_agent         TEXT,
+  ip                 INET,
+  CONSTRAINT admin_sessions_hash_key UNIQUE (session_token_hash)
+);
+
+-- =============================================================================
 -- AUDIT & OBSERVABILITY
 -- =============================================================================
 
@@ -443,6 +485,12 @@ CREATE INDEX idx_portal_user_bu_user ON portal_user_business_units (user_id);
 CREATE INDEX idx_magic_tokens_user   ON magic_link_tokens (user_id, expires_at);
 CREATE INDEX idx_portal_sessions_user
   ON portal_sessions (user_id)
+  WHERE revoked_at IS NULL;
+CREATE UNIQUE INDEX idx_admin_users_identity
+  ON admin_users (identity_provider, issuer_namespace, subject_identifier)
+  WHERE subject_identifier IS NOT NULL;
+CREATE INDEX idx_admin_sessions_user
+  ON admin_sessions (admin_user_id)
   WHERE revoked_at IS NULL;
 
 -- AUDIT

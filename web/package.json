@@ -17,6 +17,7 @@
     "sync:outlook": "tsx scripts/sync/outlook.ts",
     "sla": "tsx scripts/sla/run.ts",
     "sessions:cleanup": "tsx scripts/sessions/cleanup.ts",
+    "admin:bootstrap": "tsx scripts/admin/bootstrap.ts",
     "project": "tsx scripts/projection/run.ts",
     "project:rebuild": "tsx scripts/projection/run.ts --rebuild"
   },

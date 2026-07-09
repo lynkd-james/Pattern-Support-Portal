@@ -273,8 +273,66 @@ Implementation authority for 10a. One cohesive commit. Order:
 15. **Commit** — `Stage 10a: admin authentication, sessions and internal API`,
     on approval; push separately.
 
+### 10a implementation status (2026-07-08)
+
+Items 1–11, 13–14 **complete and validated** (non-live): migration 0004 +
+schema parity + `db:verify` 24/24; bootstrap script; realm-parametrised
+`auth/handlers.ts` (customer flow byte-for-byte preserved — 49 customer tests
+green); separate single-tenant admin Entra adapter via the msal per-app
+factory; `/api/admin/{auth/*,stats,tickets,tickets/:id,sync-runs,audit,
+quarantine}`; `AdminSessionProvider`; middleware split; import-boundary guard;
+unit 52 + integration 12 (incl. structural cross-realm store isolation);
+tsc/lint/build clean. HTTP smoke: admin API 401 without a session, a valid
+CUSTOMER cookie rejected by `/api/admin/*` (401), customer routes unaffected.
+Item 12 (live browser sign-in) **PASSED 2026-07-09** — see the matrix results
+below. Item 15 (commit) approved after the clean live run.
+
+### Item 12 — live validation matrix (executed 2026-07-09 — PASSED 10/10)
+
+Endpoint-accurate (there is no `/api/customer/*`; the customer API is
+`/api/tickets`, `/api/session`):
+
+1. Admin Entra sign-in succeeds (separate single-tenant app).
+2. `admin:bootstrap` authorised the identity (first admin).
+3. `pattern_admin_session` is issued.
+4. `/api/admin/*` accepts the admin session.
+5. Customer endpoints (`/api/tickets`, `/api/session`) REJECT the admin session (401).
+6. `/api/admin/*` REJECTS a valid customer session (401).
+7. Admin logout destroys ONLY `pattern_admin_session`.
+8. The customer session remains valid throughout.
+9. Customer sign-in still functions normally after the admin flow.
+10. **Session coexistence** (demonstrates separate cookies + stores, not just
+    asserts it): with BOTH cookies live in one browser — admin logout removes
+    only `pattern_admin_session` (customer portal stays authenticated); then
+    customer logout removes only `pattern_portal_session` (admin console stays
+    authenticated until its own logout).
+
+**Results (2026-07-09, dev, real Lynkd-tenant Entra sign-in):** all 10 points
+passed. Highlights: (1) admin OIDC start uses the pinned single-tenant
+authority (customer app remains `/organizations`); (2) bootstrap row created
+unbound, subject bound at first login (audit_events `entity_type=admin_user`,
+`change_source=ADMIN`); (3–4) `pattern_admin_session` issued and accepted by
+`/api/admin/*` (live internal-layer stats returned); (5–6) cross-realm tokens
+rejected 401 in BOTH directions and in EITHER cookie slot (`/api/tickets`,
+`/api/session`, `/api/admin/*`); (7–10) with both cookies live simultaneously,
+each realm's API served 200, admin logout cleared only
+`pattern_admin_session` (customer survived) and customer logout cleared only
+`pattern_portal_session` (admin survived) — both logout orders exercised;
+revoked tokens dead server-side on replay. Committed as one
+implementation+validation unit (Option B); push held for separate approval.
+
 Goal restated: *an authenticated Pattern admin can securely retrieve internal
 data, and no session crosses the realm boundary.*
+
+## Deferred note — realm-neutral decision result (for a future third realm)
+
+`decideLogin` currently returns customer-oriented fields (`accountId`,
+`accountActive`); the admin realm adapts them (admin id as `accountId`,
+`accountActive = true`). Fine for two realms. **If a THIRD realm is ever
+introduced** (support agents, API clients, …), evolve the decision result into
+a realm-neutral identity result (e.g. `{ userId, admit, bind }` plus a
+realm-supplied authorization payload) rather than stretching the customer shape
+further. Not worth changing for 10a.
 
 ## Open questions
 
