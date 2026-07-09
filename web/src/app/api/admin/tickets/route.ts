@@ -15,11 +15,18 @@ export async function GET(req: Request) {
     const sp = new URL(req.url).searchParams;
     const filters: AdminTicketFilters = {
       businessUnitId: sp.get("businessUnitId"),
+      accountId: sp.get("accountId"),
       stage: sp.get("stage"),
       priority: sp.get("priority"),
       shared: boolParam(sp.get("shared")),
       published: boolParam(sp.get("published")),
+      visibility: sp.get("visibility"),
+      receivedFrom: sp.get("receivedFrom"),
+      receivedTo: sp.get("receivedTo"),
+      updatedFrom: sp.get("updatedFrom"),
+      updatedTo: sp.get("updatedTo"),
       search: sp.get("search"),
+      sort: sp.get("sort"),
       page: sp.get("page") ? Number.parseInt(sp.get("page")!, 10) || 1 : undefined,
       pageSize: sp.get("pageSize") ? Number.parseInt(sp.get("pageSize")!, 10) || undefined : undefined,
     };

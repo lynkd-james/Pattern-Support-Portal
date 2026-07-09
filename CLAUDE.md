@@ -44,8 +44,12 @@ Tickets originate in Outlook, are worked in ClickUp, and are surfaced to custome
         ├── middleware.ts      # cookie-presence page redirects — UX ONLY, never the security boundary
         ├── app/               # App Router: pages (/dashboard, /login) + /api routes
         │   └── api/           # tickets, tickets/[id], session, auth/*, jobs/[step] (cron), admin/* (Stage 10a)
-        ├── components/dashboard/  # DashboardPage, FilterBar, SummaryCards, TicketTable
+        ├── components/dashboard/  # CUSTOMER UI: DashboardPage, FilterBar, SummaryCards, TicketTable
+        ├── components/admin/      # ADMIN UI (Stage 10b): AdminShell, six console pages, ui/ primitives, useAdminData
         ├── lib/               # client-safe: api.ts, types.ts, display.ts, summary.ts, authCookies.ts
+        │   └── admin/         # ADMIN client lib (Stage 10b): contracts.ts (THE /api/admin/* DTOs,
+        │                      #   shared server+UI), api.ts (fetch client), types.ts, format.ts
+        │                      #   components/admin + lib/admin are in the import-boundary guard
         └── server/            # SERVER-ONLY (never import into client code)
             ├── db.ts, env.ts, logger.ts, apiError.ts (sanitised error envelopes)
             ├── clickup/       # client.ts, types.ts
@@ -194,6 +198,7 @@ Committed on `main`:
 - **Stage 8d** — Scheduled pipeline: advisory-lock orchestrator (`jobs/pipeline.ts`), `CRON_SECRET`-guarded `/api/jobs/{step}` (one step per invocation, staggered 15-min crons in `vercel.json`), bounded Outlook backfill (real-mailbox validated: 6,539 msgs / 7 invocations), expired-session cleanup, ops runbook `docs/operations.md` with measured baselines. Hosting decision: **Vercel Cron confirmed** (worst observed step 31 s vs 300 s budget) ✓
 - **Stage 9a** — Shared tickets across customer accounts: `internal_ticket_business_units` junction as sole visibility source, projection fan-out per BU, honest-NULL origin, `MULTIPLE_BUSINESS_UNITS` quarantine removed, four executable `db:verify` invariants, permanent Vitest regression suite (unit + scratch-DB integration) — see `docs/shared-tickets.md` ✓
 - **Stage 10a** — Internal admin realm: separate `admin_users` + `admin_sessions` (isolated from customer identities), separate single-tenant admin Entra app, realm-parametrised auth handlers (reuse the OIDC mechanics, not the identity), `/api/admin/*` read-only internal-layer API (stats, tickets, sync-runs, audit, quarantine), admin bootstrap script, structural realm isolation (distinct cookie + table; enforced in middleware + API + tests), import-boundary guard — see `docs/admin-portal.md`. Live-validated 2026-07-09 (real Entra sign-in; full 10-point realm-isolation matrix incl. session coexistence) ✓
+- **Stage 10b** — Admin dashboard UI: six read-only console pages (`/admin` overview with registry-driven metric cards, tickets explorer with URL-as-filter-state, ticket detail with labelled customer-exposure panel, quarantine, sync runs, audit) over `/api/admin/*` only (client components + fetch — never the DB, never server imports); additive API extensions (filters/sort, `stats.sync` per-source watermarks, per-run quarantine counts, audit `entityLabel`, `/api/admin/reference`, `/api/admin/session`) with contracts defined once in `lib/admin/contracts.ts`; import boundary extended over the UI trees. Live-validated 2026-07-09 (browser walkthrough + curl matrix; shared-ticket fan-out validated structurally — no shared row in dev data) ✓
 
 Next:
 

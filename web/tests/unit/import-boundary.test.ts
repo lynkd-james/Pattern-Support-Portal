@@ -43,11 +43,14 @@ function treeFiles(...segments: string[]): string[] {
 }
 
 describe("realm import isolation (admin <-> customer)", () => {
-  // Admin code = server/admin + app/api/admin + app/admin.
+  // Admin code = server/admin + app/api/admin + app/admin + the 10b UI trees
+  // (components/admin, lib/admin — tightened BEFORE any UI file exists).
   const adminFiles = [
     ...treeFiles("server", "admin"),
     ...treeFiles("app", "api", "admin"),
     ...treeFiles("app", "admin"),
+    ...treeFiles("components", "admin"),
+    ...treeFiles("lib", "admin"),
   ];
   // Customer code = server/customer + app/api/{tickets,session} + components/dashboard.
   const customerFiles = [
