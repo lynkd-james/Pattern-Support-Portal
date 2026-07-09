@@ -149,7 +149,7 @@ npm run test:integration  # workflow tier — isolated scratch DB (tests/integra
 
 ## 7. Data model (see `schema.sql` for the authoritative DDL)
 
-**Enums:** `priority_level` (`P1`–`P3`; P4 not used), `portal_stage`, `sla_state` (`NOT_APPLICABLE`/`PENDING`/`AT_RISK`/`MET`/`BREACHED`), `visibility_state` (`internal_only`/`ready_for_customer`/`published`/`hidden_from_customer`), `audit_source`, `sync_status`.
+**Enums:** `priority_level` (`P1`–`P4`; **P4 = no SLA commitments** — valid work outside contractual SLAs, e.g. client queries/module assistance/internal tasks; deliberately has NO `sla_policies` row, so the engine yields `NOT_APPLICABLE` via its normal no-policy path — never special-cased), `portal_stage`, `sla_state` (`NOT_APPLICABLE`/`PENDING`/`AT_RISK`/`MET`/`BREACHED`), `visibility_state` (`internal_only`/`ready_for_customer`/`published`/`hidden_from_customer`), `audit_source`, `sync_status`.
 
 **Tenancy:** `accounts` → `business_units`. Current model: **each ClickUp `Customer` code is its own independent client = one account + one business unit**, where `business_units.slug` = the ClickUp `Customer` code (the sync's attribution key). `status_mappings` and `sla_policies` are **global** (`account_id`/`business_unit_id` NULL). The legacy single `pepkor` account is retired via `is_active = FALSE` (non-destructive). The runtime resolves business units live — onboard a new client with a seed row / admin INSERT, not by editing engine code. `db:verify` uses **structural invariants** (e.g. "every active account has ≥1 active BU", "no duplicate active slug"), **not fixed client counts**.
 
@@ -157,7 +157,7 @@ npm run test:integration  # workflow tier — isolated scratch DB (tests/integra
 
 **Core tables:** `internal_tickets`, `internal_ticket_business_units`, `internal_ticket_events`, `customer_tickets`, `customer_ticket_timeline`, `status_mappings`, `sla_calendars`, `sla_calendar_holidays`, `sla_policies`, `portal_users`, `portal_user_business_units`, `magic_link_tokens`, `portal_sessions`, `audit_events`, `sync_runs`.
 
-**SLA model (Stage 7).** Business-hours only, Mon–Fri 08:00–17:00 **Africa/Johannesburg** (UTC+2, no DST). Response = `created_at → acknowledged_at`; Resolution = `created_at → closed_at`. No pause behaviour. Seeded global targets: **P1 2h/24h, P2 8h/48h, P3 24h/120h** (business hours), **at-risk threshold 80%**. States: milestone reached → `MET`/`BREACHED`; else `BREACHED` if past due, `AT_RISK` past the threshold, else `PENDING`; no matching policy → `NOT_APPLICABLE`. Values live in `sla_policies` only.
+**SLA model (Stage 7).** Business-hours only, Mon–Fri 08:00–17:00 **Africa/Johannesburg** (UTC+2, no DST). Response = `created_at → acknowledged_at`; Resolution = `created_at → closed_at`. No pause behaviour. Seeded global targets: **P1 2h/24h, P2 8h/48h, P3 24h/120h** (business hours), **at-risk threshold 80%**; **P4 has no policy by design** (no SLA — the UI renders `NOT_APPLICABLE` as "No SLA"). States: milestone reached → `MET`/`BREACHED`; else `BREACHED` if past due, `AT_RISK` past the threshold, else `PENDING`; no matching policy → `NOT_APPLICABLE`. Values live in `sla_policies` only.
 
 ---
 

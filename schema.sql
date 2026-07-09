@@ -31,7 +31,11 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;    -- trigram search on title / ticket_n
 -- ENUMERATED TYPES
 -- =============================================================================
 
-CREATE TYPE priority_level AS ENUM ('P1', 'P2', 'P3');
+-- P4 = valid work intentionally outside contractual SLA commitments (client
+-- queries, module assistance, internal/administrative tickets). No sla_policies
+-- row exists for P4 BY DESIGN — the engine's "no matching policy" path yields
+-- NOT_APPLICABLE; the absence of a policy is the rule, not a gap.
+CREATE TYPE priority_level AS ENUM ('P1', 'P2', 'P3', 'P4');
 
 -- Normalised, customer-facing lifecycle stage. Raw ClickUp statuses map onto
 -- these via status_mappings so internal taxonomy is never exposed.

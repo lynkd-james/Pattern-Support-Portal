@@ -24,10 +24,12 @@ export const PRIORITY_LABELS: Record<PriorityLevel, string> = {
   P1: "P1",
   P2: "P2",
   P3: "P3",
+  P4: "P4",
 };
 
 export const SLA_LABELS: Record<SlaState, string> = {
-  NOT_APPLICABLE: "—",
+  // P4 (and any unpoliced ticket) has no SLA commitments — say so, don't dash.
+  NOT_APPLICABLE: "No SLA",
   PENDING: "On Track",
   AT_RISK: "At Risk",
   MET: "Met",
@@ -47,6 +49,7 @@ export const PRIORITY_BADGE_CLASSES: Record<PriorityLevel, string> = {
   P1: "bg-[rgba(226,106,96,0.16)] text-[#E26A60] ring-[rgba(226,106,96,0.34)]",
   P2: "bg-[rgba(240,184,84,0.16)] text-[#F0B854] ring-[rgba(240,184,84,0.34)]",
   P3: "bg-white/5 text-[#9C8E78] ring-[#3A2D1F]",
+  P4: "bg-[rgba(111,166,224,0.16)] text-[#6FA6E0] ring-[rgba(111,166,224,0.30)]",
 };
 
 export const STAGE_DOT_CLASSES: Record<PortalStage, string> = {

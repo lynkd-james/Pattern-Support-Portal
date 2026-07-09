@@ -10,7 +10,10 @@
 import { createHash } from "node:crypto";
 import type { ClickUpCustomField, ClickUpTask } from "../clickup/types";
 
-export type Priority = "P1" | "P2" | "P3";
+// P4 (standalone change, 2026-07-09): a first-class priority for work
+// intentionally outside contractual SLA commitments. Resolves like P1–P3;
+// no SLA policy exists for it, so the engine yields NOT_APPLICABLE naturally.
+export type Priority = "P1" | "P2" | "P3" | "P4";
 
 // Stage 9a (docs/shared-tickets.md): MULTIPLE_BUSINESS_UNITS removed — a
 // multi-label ticket is a legitimate SHARED ticket, not an anomaly. The
@@ -18,13 +21,16 @@ export type Priority = "P1" | "P2" | "P3";
 // set is now derived data reconciled on every sync (a changed label set is an
 // update, with origin transitions audited), so no tenancy conflict remains.
 // BU_UNDETERMINED (zero matches) is retained — never-guess survives.
+// SLA_PRIORITY_UNSUPPORTED removed with P4 support: labels are pre-filtered
+// to the known P1–P4 set, so an unknown label already falls through to
+// SLA_PRIORITY_MISSING — the reason had become unreachable. (Historical
+// sync_runs rows may still carry it; display copy keeps its explanation.)
 export type QuarantineReason =
   | "NO_CUSTOM_ID"
   | "MISSING_CREATED_TIMESTAMP"
   | "BU_UNDETERMINED"
   | "SLA_PRIORITY_MISSING"
   | "SLA_PRIORITY_MULTIPLE"
-  | "SLA_PRIORITY_UNSUPPORTED"
   | "STATUS_UNMAPPED";
 
 export interface ResolvedTicket {
@@ -141,7 +147,8 @@ export function resolveTicket(
   // ORIGIN is only real when the set has exactly one member (docs/shared-tickets.md §2).
   const origin = businessUnits.length === 1 ? businessUnits[0] : null;
 
-  // 4. Priority from the SLA Priority label (P1–P3; P4 unsupported).
+  // 4. Priority from the SLA Priority label (P1–P4; P4 = no SLA commitments,
+  // handled by policy absence — never special-cased here or in the engine).
   const priorityLabels = [
     ...new Set(
       labelValues(task, ctx.slaPriorityFieldName)
@@ -157,9 +164,6 @@ export function resolveTicket(
       "SLA_PRIORITY_MULTIPLE",
       `task ${ticketNumber} has multiple SLA Priorities [${priorityLabels.join(", ")}]`
     );
-  }
-  if (priorityLabels[0] === "P4") {
-    return quarantine("SLA_PRIORITY_UNSUPPORTED", `task ${ticketNumber} is P4 (not in use)`);
   }
   const priority = priorityLabels[0] as Priority;
 

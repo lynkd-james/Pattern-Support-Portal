@@ -5,7 +5,9 @@
 // corresponding contract change.
 // =============================================================================
 
-export type PriorityLevel = "P1" | "P2" | "P3";
+// P4 added 2026-07-09 (contract change: P4 = valid priority with no SLA
+// commitments; SLA states arrive as NOT_APPLICABLE with null due-times).
+export type PriorityLevel = "P1" | "P2" | "P3" | "P4";
 
 export type PortalStage =
   | "NEW"

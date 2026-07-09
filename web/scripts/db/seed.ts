@@ -99,6 +99,8 @@ const SLA_POLICIES: ReadonlyArray<{
   { priority: "P1", responseMinutes: 2 * BUSINESS_HOUR, resolutionMinutes: 24 * BUSINESS_HOUR },
   { priority: "P2", responseMinutes: 8 * BUSINESS_HOUR, resolutionMinutes: 48 * BUSINESS_HOUR },
   { priority: "P3", responseMinutes: 24 * BUSINESS_HOUR, resolutionMinutes: 120 * BUSINESS_HOUR },
+  // P4 is deliberately ABSENT: it carries no SLA commitments. The engine's
+  // "no matching policy" path yields NOT_APPLICABLE — do not add a row here.
 ];
 
 /** Upsert 18 client accounts, each with one business unit (slug = ClickUp code). */

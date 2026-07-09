@@ -101,3 +101,21 @@ describe("resolver — visibility set", () => {
     expect(r.kind === "quarantine" && r.reason).toBe("SLA_PRIORITY_MISSING");
   });
 });
+
+describe("resolver — P4 as a first-class priority (standalone change)", () => {
+  it("P4 RESOLVES like any other priority (no quarantine)", () => {
+    const r = resolveTicket(task(["AYN"], ["P4"]), ctx);
+    expect(r.kind).toBe("ok");
+    if (r.kind === "ok") expect(r.data.priority).toBe("P4");
+  });
+
+  it("an unrecognised priority label still quarantines (as MISSING — never guess)", () => {
+    const r = resolveTicket(task(["AYN"], ["P5"]), ctx);
+    expect(r.kind === "quarantine" && r.reason).toBe("SLA_PRIORITY_MISSING");
+  });
+
+  it("P4 alongside another priority is still ambiguous (SLA_PRIORITY_MULTIPLE)", () => {
+    const r = resolveTicket(task(["AYN"], ["P2", "P4"]), ctx);
+    expect(r.kind === "quarantine" && r.reason).toBe("SLA_PRIORITY_MULTIPLE");
+  });
+});

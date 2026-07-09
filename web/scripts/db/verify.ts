@@ -249,6 +249,29 @@ async function main(): Promise<void> {
     0
   );
 
+  // --- P4 priority (standalone change, 2026-07-09) ---------------------------
+  // P4 must be a legal priority_level value, and must NOT have an SLA policy:
+  // the engine's "no matching policy" path IS the no-SLA business rule.
+  const p4 = await query<{ n: string }>(
+    `SELECT count(*) AS n FROM pg_enum e
+       JOIN pg_type t ON t.oid = e.enumtypid
+      WHERE t.typname = 'priority_level' AND e.enumlabel = 'P4'`
+  );
+  record(
+    "priority_level includes P4",
+    Number(p4.rows[0].n) === 1,
+    Number(p4.rows[0].n) === 1 ? "present" : "missing — run migration 0005"
+  );
+  const p4Policy = await query<{ n: string }>(
+    // ::text comparison so this check cannot itself error on a pre-P4 enum.
+    `SELECT count(*) AS n FROM sla_policies WHERE priority::text = 'P4' AND is_active = TRUE`
+  );
+  record(
+    "no active SLA policy for P4 (no-SLA by design)",
+    Number(p4Policy.rows[0].n) === 0,
+    Number(p4Policy.rows[0].n) === 0 ? "correctly absent" : "unexpected P4 policy found"
+  );
+
   // Guard: confirm "business requirement" was NOT mapped (must quarantine).
   const br = await query<{ n: string }>(
     "SELECT count(*) AS n FROM status_mappings WHERE clickup_status = 'business requirement'"
